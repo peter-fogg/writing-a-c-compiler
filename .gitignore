@@ -1,1 +1,6 @@
 /target
+
+c-src/*
+!c-src/*.c
+
+*.pdf
