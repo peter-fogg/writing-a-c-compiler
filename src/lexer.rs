@@ -13,14 +13,14 @@ pub enum Token<'a> {
 }
 
 #[derive(Debug)]
-pub struct Scanner<'a> {
+pub struct Lexer<'a> {
     source: &'a str,
     position: usize,
 }
 
-impl<'a> Scanner<'a > {
+impl<'a> Lexer<'a > {
     pub fn new(source: &'a str) -> Self {
-        Scanner {
+        Lexer {
             source,
             position: 0,
         }
@@ -85,7 +85,7 @@ impl<'a> Scanner<'a > {
     }
 }
 
-impl<'a> Iterator for Scanner<'a> {
+impl<'a> Iterator for Lexer<'a> {
     type Item = Token<'a>;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -117,25 +117,25 @@ mod test {
 
     #[test]
     fn whitespace() {
-        let tokens = Scanner::new(" \t      \n\n  \n").collect::<Vec<_>>();
+        let tokens = Lexer::new(" \t      \n\n  \n").collect::<Vec<_>>();
         assert_eq!(tokens, vec![]);
     }
 
     #[test]
     fn numbers() {
-        let tokens = Scanner::new("1124\n").collect::<Vec<_>>();
+        let tokens = Lexer::new("1124\n").collect::<Vec<_>>();
         assert_eq!(tokens, vec![Token::Constant("1124")]);
     }
 
     #[test]
     fn punctuation() {
-        let tokens = Scanner::new("; ( ) { } \n").collect::<Vec<_>>();
+        let tokens = Lexer::new("; ( ) { } \n").collect::<Vec<_>>();
         assert_eq!(tokens, vec![Semicolon, LParen, RParen, LBrace, RBrace]);
     }
 
     #[test]
     fn identifiers() {
-        let tokens = Scanner::new("return int void ").collect::<Vec<_>>();
+        let tokens = Lexer::new("return int void ").collect::<Vec<_>>();
         assert_eq!(tokens, vec![Return, Int, Void]);
     }
 }
