@@ -36,6 +36,25 @@ impl<'a> Scanner<'a > {
         Some(Token::Constant(self.source.get(start_index..self.position)?))
     }
 
+    pub fn identifier(&mut self) -> Option<Token<'a>> {
+        let start_index = self.position - 1;
+
+        while Self::is_alpha(self.peek().unwrap_or(" ")) {
+            self.position += 1;
+        }
+
+        let id = self.source.get(start_index..self.position)?;
+
+        let token = match id {
+            "return" => Token::Return,
+            "int" => Token::Int,
+            "void" => Token::Void,
+            _ => Token::Id(id),
+        };
+
+        Some(token)
+    }
+
     fn peek(&self) -> Option<&'a str> {
         if self.position >= self.source.len() {
             None
@@ -60,6 +79,10 @@ impl<'a> Scanner<'a > {
     pub fn is_whitespace(s: &'a str) -> bool {
         " \t\n".contains(s)
     }
+
+    pub fn is_alpha(s: &'a str) -> bool {
+        "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_".contains(s)
+    }
 }
 
 impl<'a> Iterator for Scanner<'a> {
@@ -69,10 +92,18 @@ impl<'a> Iterator for Scanner<'a> {
         loop {
             let c = self.next_char()?;
             match c {
-                c if Self::is_whitespace(c) => { continue; }
+                c if Self::is_whitespace(c) => { continue; },
                 c if Self::is_digit(c) => {
                     return self.constant();
+                },
+                c if Self::is_alpha(c) => {
+                    return self.identifier();
                 }
+                "(" => return Some(Token::LParen),
+                ")" => return Some(Token::RParen),
+                "{" => return Some(Token::LBrace),
+                "}" => return Some(Token::RBrace),
+                ";" => return Some(Token::Semicolon),
                 _ => return None
             }
         }
@@ -82,6 +113,7 @@ impl<'a> Iterator for Scanner<'a> {
 #[cfg(test)]
 mod test {
     use super::*;
+    use Token::*;
 
     #[test]
     fn whitespace() {
@@ -93,5 +125,17 @@ mod test {
     fn numbers() {
         let tokens = Scanner::new("1124\n").collect::<Vec<_>>();
         assert_eq!(tokens, vec![Token::Constant("1124")]);
+    }
+
+    #[test]
+    fn punctuation() {
+        let tokens = Scanner::new("; ( ) { } \n").collect::<Vec<_>>();
+        assert_eq!(tokens, vec![Semicolon, LParen, RParen, LBrace, RBrace]);
+    }
+
+    #[test]
+    fn identifiers() {
+        let tokens = Scanner::new("return int void ").collect::<Vec<_>>();
+        assert_eq!(tokens, vec![Return, Int, Void]);
     }
 }
