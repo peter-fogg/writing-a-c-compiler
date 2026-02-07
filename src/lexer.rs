@@ -26,35 +26,31 @@ impl<'a> Lexer<'a> {
         }
     }
 
-    pub fn constant(&mut self) -> Option<Token<'a>> {
+    pub fn constant(&mut self) -> Token<'a> {
         let start_index = self.position - 1;
 
         while Self::is_digit(self.peek().unwrap_or("_")) {
             self.position += 1;
         }
 
-        Some(Token::Constant(
-            self.source.get(start_index..self.position)?,
-        ))
+        Token::Constant(self.source.get(start_index..self.position).unwrap())
     }
 
-    pub fn identifier(&mut self) -> Option<Token<'a>> {
+    pub fn identifier(&mut self) -> Token<'a> {
         let start_index = self.position - 1;
 
         while Self::is_alpha(self.peek().unwrap_or(" ")) {
             self.position += 1;
         }
 
-        let id = self.source.get(start_index..self.position)?;
+        let id = self.source.get(start_index..self.position).unwrap();
 
-        let token = match id {
+        match id {
             "return" => Token::Return,
             "int" => Token::Int,
             "void" => Token::Void,
             _ => Token::Id(id),
-        };
-
-        Some(token)
+        }
     }
 
     fn peek(&self) -> Option<&'a str> {
@@ -87,28 +83,36 @@ impl<'a> Lexer<'a> {
     }
 }
 
+#[derive(Debug, PartialEq, Clone, Copy)]
+pub enum LexError {
+    InvalidToken,
+}
+
 impl<'a> Iterator for Lexer<'a> {
-    type Item = Token<'a>;
+    type Item = Result<Token<'a>, LexError>;
 
     fn next(&mut self) -> Option<Self::Item> {
         loop {
-            let c = self.next_char()?;
+            let c = self.next_char();
+            if c.is_none() {
+                return None;
+            }
             match c {
-                c if Self::is_whitespace(c) => {
+                Some(c) if Self::is_whitespace(c) => {
                     continue;
                 }
-                c if Self::is_digit(c) => {
-                    return self.constant();
+                Some(c) if Self::is_digit(c) => {
+                    return Some(Ok(self.constant()));
                 }
-                c if Self::is_alpha(c) => {
-                    return self.identifier();
+                Some(c) if Self::is_alpha(c) => {
+                    return Some(Ok(self.identifier()));
                 }
-                "(" => return Some(Token::LParen),
-                ")" => return Some(Token::RParen),
-                "{" => return Some(Token::LBrace),
-                "}" => return Some(Token::RBrace),
-                ";" => return Some(Token::Semicolon),
-                _ => return None,
+                Some("(") => return Some(Ok(Token::LParen)),
+                Some(")") => return Some(Ok(Token::RParen)),
+                Some("{") => return Some(Ok(Token::LBrace)),
+                Some("}") => return Some(Ok(Token::RBrace)),
+                Some(";") => return Some(Ok(Token::Semicolon)),
+                _ => return Some(Err(LexError::InvalidToken)),
             }
         }
     }
