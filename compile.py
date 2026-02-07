@@ -1,3 +1,5 @@
+#!/usr/bin/env python3
+import os
 import subprocess
 import sys
 
@@ -8,7 +10,12 @@ if __name__ == '__main__':
     preprocessed = output_name + '.i'
     assembly = output_name + '.s'
     subprocess.run(['gcc', '-E', '-P', src_name, '-o', preprocessed])
-    print(f'Would compile {preprocessed} to {assembly} here...')
-    if '-S' in sys.argv:
-        sys.exit(0)
-    subprocess.run(['gcc', assembly, '-o', output_name])
+
+    proc = subprocess.run([os.path.abspath('/Users/pfogg/Documents/src/writing-a-compiler/target/debug/writing-a-compiler'), preprocessed])
+
+    if proc.returncode != 0:
+        sys.exit(proc.returncode)
+
+    # if '-S' in sys.argv:
+    #     sys.exit(0)
+    # subprocess.run(['gcc', assembly, '-o', output_name])
