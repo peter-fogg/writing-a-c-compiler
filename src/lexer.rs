@@ -9,7 +9,7 @@ pub enum Token<'a> {
     RBrace,
     Return,
     Constant(&'a str),
-    Semicolon
+    Semicolon,
 }
 
 #[derive(Debug)]
@@ -18,7 +18,7 @@ pub struct Lexer<'a> {
     position: usize,
 }
 
-impl<'a> Lexer<'a > {
+impl<'a> Lexer<'a> {
     pub fn new(source: &'a str) -> Self {
         Lexer {
             source,
@@ -33,7 +33,9 @@ impl<'a> Lexer<'a > {
             self.position += 1;
         }
 
-        Some(Token::Constant(self.source.get(start_index..self.position)?))
+        Some(Token::Constant(
+            self.source.get(start_index..self.position)?,
+        ))
     }
 
     pub fn identifier(&mut self) -> Option<Token<'a>> {
@@ -59,7 +61,7 @@ impl<'a> Lexer<'a > {
         if self.position >= self.source.len() {
             None
         } else {
-            self.source.get(self.position..self.position+1)
+            self.source.get(self.position..self.position + 1)
         }
     }
 
@@ -92,10 +94,12 @@ impl<'a> Iterator for Lexer<'a> {
         loop {
             let c = self.next_char()?;
             match c {
-                c if Self::is_whitespace(c) => { continue; },
+                c if Self::is_whitespace(c) => {
+                    continue;
+                }
                 c if Self::is_digit(c) => {
                     return self.constant();
-                },
+                }
                 c if Self::is_alpha(c) => {
                     return self.identifier();
                 }
@@ -104,7 +108,7 @@ impl<'a> Iterator for Lexer<'a> {
                 "{" => return Some(Token::LBrace),
                 "}" => return Some(Token::RBrace),
                 ";" => return Some(Token::Semicolon),
-                _ => return None
+                _ => return None,
             }
         }
     }
@@ -124,7 +128,7 @@ mod test {
     #[test]
     fn numbers() {
         let tokens = Lexer::new("1124\n").collect::<Vec<_>>();
-        assert_eq!(tokens, vec![Token::Constant("1124")]);
+        assert_eq!(tokens, vec![Constant("1124")]);
     }
 
     #[test]
