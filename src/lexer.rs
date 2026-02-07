@@ -102,7 +102,13 @@ impl<'a> Iterator for Lexer<'a> {
                     continue;
                 }
                 Some(c) if Self::is_digit(c) => {
-                    return Some(Ok(self.constant()));
+                    let number = self.constant();
+                    if let Some(next_c) = self.peek()
+                        && Self::is_alpha(next_c)
+                    {
+                        return Some(Err(LexError::InvalidToken));
+                    }
+                    return Some(Ok(number));
                 }
                 Some(c) if Self::is_alpha(c) => {
                     return Some(Ok(self.identifier()));
