@@ -1,6 +1,9 @@
 use std::{env, fs, process};
 
+use parser::Parser;
+
 mod lexer;
+mod parser;
 
 fn main() {
     let args = env::args().collect::<Vec<String>>();
@@ -13,6 +16,7 @@ fn main() {
 }
 
 fn parse_file(text: String) {
-    let tokens = lexer::Lexer::new(&text).peekable().collect::<Vec<_>>();
-    print!("{:?}", tokens);
+    let tokens = lexer::Lexer::new(&text).peekable();
+    let parsed = Parser::new(tokens).parse();
+    println!("{:?}", parsed);
 }
