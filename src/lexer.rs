@@ -89,7 +89,7 @@ pub enum LexError {
 }
 
 impl<'a> Iterator for Lexer<'a> {
-    type Item = Result<Token<'a>, LexError>;
+    type Item = Token<'a>;
 
     fn next(&mut self) -> Option<Self::Item> {
         loop {
@@ -97,6 +97,7 @@ impl<'a> Iterator for Lexer<'a> {
             if c.is_none() {
                 return None;
             }
+
             match c {
                 Some(c) if Self::is_whitespace(c) => {
                     continue;
@@ -106,20 +107,21 @@ impl<'a> Iterator for Lexer<'a> {
                     if let Some(next_c) = self.peek()
                         && Self::is_alpha(next_c)
                     {
-                        return Some(Err(LexError::InvalidToken));
+                        // panic!(format!("{:?}", LexError::InvalidToken));
+                        panic!("Bad token");
                     }
-                    return Some(Ok(number));
+                    return Some(number);
                 }
                 Some(c) if Self::is_alpha(c) => {
-                    return Some(Ok(self.identifier()));
+                    return Some(self.identifier());
                 }
-                Some("(") => return Some(Ok(Token::LParen)),
-                Some(")") => return Some(Ok(Token::RParen)),
-                Some("{") => return Some(Ok(Token::LBrace)),
-                Some("}") => return Some(Ok(Token::RBrace)),
-                Some(";") => return Some(Ok(Token::Semicolon)),
-                _ => return Some(Err(LexError::InvalidToken)),
-            }
+                Some("(") => return Some(Token::LParen),
+                Some(")") => return Some(Token::RParen),
+                Some("{") => return Some(Token::LBrace),
+                Some("}") => return Some(Token::RBrace),
+                Some(";") => return Some(Token::Semicolon),
+                _ => panic!("Bad token"),
+            };
         }
     }
 }

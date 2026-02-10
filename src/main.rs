@@ -13,17 +13,6 @@ fn main() {
 }
 
 fn parse_file(text: String) {
-    let token_result = lexer::Lexer::new(&text)
-        .peekable()
-        .collect::<Result<Vec<_>, _>>();
-
-    match token_result {
-        Ok(tokens) => {
-            print!("{:?}", tokens);
-        }
-        Err(err) => {
-            println!("{:?}", err);
-            process::exit(1);
-        }
-    }
+    let tokens = lexer::Lexer::new(&text).peekable().collect::<Vec<_>>();
+    print!("{:?}", tokens);
 }
