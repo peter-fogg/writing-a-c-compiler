@@ -6,6 +6,7 @@ mod codegen;
 mod emit;
 mod lexer;
 mod parser;
+mod tacky;
 
 fn main() {
     let args = env::args().collect::<Vec<String>>();
