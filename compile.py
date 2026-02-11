@@ -16,6 +16,6 @@ if __name__ == '__main__':
     if proc.returncode != 0:
         sys.exit(proc.returncode)
 
-    # if '-S' in sys.argv:
-    #     sys.exit(0)
-    # subprocess.run(['gcc', assembly, '-o', output_name])
+    if '-S' in sys.argv:
+        sys.exit(0)
+    subprocess.run(['gcc', assembly, '-o', output_name])

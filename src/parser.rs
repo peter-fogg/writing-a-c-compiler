@@ -19,7 +19,7 @@ pub enum Program<'a> {
 
 type TokenStream<'a> = Peekable<Lexer<'a>>;
 
-type ParseOutput<'a> = Program<'a>;
+pub type ParseOutput<'a> = Program<'a>;
 
 pub struct Parser<'a> {
     tokens: TokenStream<'a>,
@@ -65,10 +65,7 @@ impl<'a> Parser<'a> {
         };
 
         let n = match n_str.parse::<i32>() {
-            Ok(n) => {
-                println!("{:?}", n);
-                n
-            }
+            Ok(n) => n,
             err => panic!("bad numeric parse: {:?}", err),
         };
 

@@ -83,11 +83,6 @@ impl<'a> Lexer<'a> {
     }
 }
 
-#[derive(Debug, PartialEq, Clone, Copy)]
-pub enum LexError {
-    InvalidToken,
-}
-
 impl<'a> Iterator for Lexer<'a> {
     type Item = Token<'a>;
 
@@ -107,7 +102,6 @@ impl<'a> Iterator for Lexer<'a> {
                     if let Some(next_c) = self.peek()
                         && Self::is_alpha(next_c)
                     {
-                        // panic!(format!("{:?}", LexError::InvalidToken));
                         panic!("Bad token");
                     }
                     return Some(number);
