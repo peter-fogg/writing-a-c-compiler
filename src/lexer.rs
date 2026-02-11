@@ -10,6 +10,9 @@ pub enum Token<'a> {
     Return,
     Constant(&'a str),
     Semicolon,
+    Tilde,
+    Minus,
+    DoubleMinus,
 }
 
 #[derive(Debug)]
@@ -109,12 +112,22 @@ impl<'a> Iterator for Lexer<'a> {
                 Some(c) if Self::is_alpha(c) => {
                     return Some(self.identifier());
                 }
+                Some("-") => {
+                    if let Some("-") = self.peek() {
+                        self.next_char();
+                        return Some(Token::DoubleMinus);
+                    } else {
+                        return Some(Token::Minus);
+                    }
+                }
+                Some("~") => return Some(Token::Tilde),
                 Some("(") => return Some(Token::LParen),
                 Some(")") => return Some(Token::RParen),
                 Some("{") => return Some(Token::LBrace),
                 Some("}") => return Some(Token::RBrace),
                 Some(";") => return Some(Token::Semicolon),
-                _ => panic!("Bad token"),
+                Some(c) => panic!("Bad token {}", c),
+                None => panic!("Unexpected EOF"),
             };
         }
     }
