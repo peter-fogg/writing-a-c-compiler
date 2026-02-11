@@ -3,16 +3,23 @@ use std::iter::Peekable;
 use crate::lexer::{Lexer, Token};
 
 #[derive(Debug, PartialEq, Clone, Copy)]
-pub enum Expression {
-    Constant(i32),
+pub enum UnaryOperator {
+    Complement,
+    Negate,
 }
 
-#[derive(Debug, PartialEq, Clone, Copy)]
+#[derive(Debug, PartialEq, Clone)]
+pub enum Expression {
+    Constant(i32),
+    Unary(UnaryOperator, Box<Expression>),
+}
+
+#[derive(Debug, PartialEq, Clone)]
 pub enum Statement {
     Return(Expression),
 }
 
-#[derive(Debug, PartialEq, Clone, Copy)]
+#[derive(Debug, PartialEq, Clone)]
 pub enum Program<'a> {
     Function(&'a str, Statement),
 }
@@ -59,6 +66,15 @@ impl<'a> Parser<'a> {
 
     fn statement(&mut self) -> Statement {
         self.consume(Token::Return);
+
+        let expr = self.expression();
+
+        self.consume(Token::Semicolon);
+
+        Statement::Return(expr)
+    }
+
+    fn constant(&mut self) -> Expression {
         let n_str = match self.tokens.next() {
             Some(Token::Constant(n_str)) => n_str,
             err => panic!("bad numeric parse: {:?}", err),
@@ -69,9 +85,33 @@ impl<'a> Parser<'a> {
             err => panic!("bad numeric parse: {:?}", err),
         };
 
-        self.consume(Token::Semicolon);
+        Expression::Constant(n)
+    }
 
-        Statement::Return(Expression::Constant(n))
+    fn expression(&mut self) -> Expression {
+        match self.tokens.peek() {
+            Some(Token::Constant(_)) => return self.constant(),
+            Some(Token::LParen) => {
+                self.tokens.next();
+                let sub_expr = self.expression();
+                self.consume(Token::RParen);
+                return sub_expr;
+            }
+            Some(Token::Tilde | Token::Minus) => {
+                let un_op = self.unary_op();
+                let inner_expr = self.expression();
+                return Expression::Unary(un_op, Box::new(inner_expr));
+            }
+            _ => panic!(),
+        }
+    }
+
+    fn unary_op(&mut self) -> UnaryOperator {
+        match self.tokens.next() {
+            Some(Token::Tilde) => UnaryOperator::Complement,
+            Some(Token::Minus) => UnaryOperator::Negate,
+            _ => panic!("unreachable"),
+        }
     }
 
     fn consume(&mut self, token: Token) {

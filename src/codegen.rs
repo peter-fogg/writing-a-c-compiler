@@ -32,7 +32,9 @@ pub fn assemble<'a>(ast: parser::ParseOutput<'a>) -> Assembly<'a> {
 }
 
 fn assemble_instructions<'a>(statements: parser::Statement) -> Vec<Instr<'a>> {
-    let parser::Statement::Return(parser::Expression::Constant(n)) = statements;
+    let parser::Statement::Return(parser::Expression::Constant(n)) = statements else {
+        todo!()
+    };
     vec![
         Instr::Mov {
             src: Operand::Imm(n),
