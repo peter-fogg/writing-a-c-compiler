@@ -35,7 +35,8 @@ pub fn emit_tacky<'a>(ast: parser::ParseOutput<'a>) -> Tacky<'a> {
     let parser::Statement::Return(expr) = statement;
     let mut instructions = Vec::new();
     let mut tackify_state = TackifyState::new();
-    let tackified = tackify_state.tackify_expr(expr, &mut instructions);
+    let result = tackify_state.tackify_expr(expr, &mut instructions);
+    instructions.push(Instr::Return(result));
     Tacky::Function { name, instructions }
 }
 

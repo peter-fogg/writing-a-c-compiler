@@ -91,16 +91,13 @@ impl<'a> Iterator for Lexer<'a> {
 
     fn next(&mut self) -> Option<Self::Item> {
         loop {
-            let c = self.next_char();
-            if c.is_none() {
-                return None;
-            }
+            let c = self.next_char()?;
 
             match c {
-                Some(c) if Self::is_whitespace(c) => {
+                c if Self::is_whitespace(c) => {
                     continue;
                 }
-                Some(c) if Self::is_digit(c) => {
+                c if Self::is_digit(c) => {
                     let number = self.constant();
                     if let Some(next_c) = self.peek()
                         && Self::is_alpha(next_c)
@@ -109,10 +106,10 @@ impl<'a> Iterator for Lexer<'a> {
                     }
                     return Some(number);
                 }
-                Some(c) if Self::is_alpha(c) => {
+                c if Self::is_alpha(c) => {
                     return Some(self.identifier());
                 }
-                Some("-") => {
+                "-" => {
                     if let Some("-") = self.peek() {
                         self.next_char();
                         return Some(Token::DoubleMinus);
@@ -120,14 +117,13 @@ impl<'a> Iterator for Lexer<'a> {
                         return Some(Token::Minus);
                     }
                 }
-                Some("~") => return Some(Token::Tilde),
-                Some("(") => return Some(Token::LParen),
-                Some(")") => return Some(Token::RParen),
-                Some("{") => return Some(Token::LBrace),
-                Some("}") => return Some(Token::RBrace),
-                Some(";") => return Some(Token::Semicolon),
-                Some(c) => panic!("Bad token {}", c),
-                None => panic!("Unexpected EOF"),
+                "~" => return Some(Token::Tilde),
+                "(" => return Some(Token::LParen),
+                ")" => return Some(Token::RParen),
+                "{" => return Some(Token::LBrace),
+                "}" => return Some(Token::RBrace),
+                ";" => return Some(Token::Semicolon),
+                c => panic!("Bad token {}", c),
             };
         }
     }

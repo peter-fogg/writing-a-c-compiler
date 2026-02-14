@@ -90,19 +90,19 @@ impl<'a> Parser<'a> {
 
     fn expression(&mut self) -> Expression {
         match self.tokens.peek() {
-            Some(Token::Constant(_)) => return self.constant(),
+            Some(Token::Constant(_)) => self.constant(),
             Some(Token::LParen) => {
                 self.tokens.next();
                 let sub_expr = self.expression();
                 self.consume(Token::RParen);
-                return sub_expr;
+                sub_expr
             }
             Some(Token::Tilde | Token::Minus) => {
                 let un_op = self.unary_op();
                 let inner_expr = self.expression();
-                return Expression::Unary(un_op, Box::new(inner_expr));
+                Expression::Unary(un_op, Box::new(inner_expr))
             }
-            _ => panic!(),
+            t => panic!("Unexpected token {:?}", t),
         }
     }
 
