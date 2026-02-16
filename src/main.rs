@@ -19,18 +19,22 @@ fn main() {
 }
 
 fn parse_file(text: String, path_str: &str, rest_args: Vec<String>) {
-    let tokens = lexer::Lexer::new(&text).peekable();
-    let parsed = Parser::new(tokens).parse();
+    let lexed = lexer::Lexer::new(&text).peekable();
+    if rest_args.iter().any(|s| s == "--show-lexed") {
+        println!("{:?}", lexed);
+        std::process::exit(0);
+    }
+    let parsed = Parser::new(lexed).parse();
     if rest_args.iter().any(|s| s == "--show-parsed") {
         println!("{:?}", parsed);
         std::process::exit(0);
     }
-    let tacky = tacky::emit_tacky(parsed);
+    let tackified = tacky::emit_tacky(parsed);
     if rest_args.iter().any(|s| s == "--show-tackified") {
-        println!("{:?}", tacky);
+        println!("{:?}", tackified);
         std::process::exit(0);
     }
-    let assembled = codegen::assemble(tacky);
+    let assembled = codegen::assemble(tackified);
     if rest_args.iter().any(|s| s == "--show-assembled") {
         println!("{:?}", assembled);
         std::process::exit(0);
