@@ -1,7 +1,7 @@
 use std::io::Result;
 use std::{fs::File, io::Write};
 
-use crate::codegen::{Assembly, Instr, Operand, Register, UnaryOp};
+use crate::codegen::{Assembly, BinaryOp, Instr, Operand, Register, UnaryOp};
 
 pub fn emit<'a>(
     Assembly::Function { name, instructions }: Assembly<'a>,
@@ -28,9 +28,22 @@ fn emit_instr(instr: Instr, file: &mut File) -> Result<()> {
             format!("\tmovl\t{}, {}\n", write_operand(src), write_operand(dst)).as_bytes(),
         )?,
         Instr::AllocateStack(n) => file.write_all(format!("\tsubq\t${}, %rsp\n", n).as_bytes())?,
-        Instr::Unary(unop, operand) => file.write_all(
+        Instr::Unary { unop, dst: operand } => file.write_all(
             format!("\t{}\t{}\n", write_unop(unop), write_operand(operand)).as_bytes(),
         )?,
+        Instr::Binary { binop, src, dst } => file.write_all(
+            format!(
+                "\t{}\t{}, {}\n",
+                write_binop(binop),
+                write_operand(src),
+                write_operand(dst)
+            )
+            .as_bytes(),
+        )?,
+        Instr::IDiv(operand) => {
+            file.write_all(format!("\tidivl\t{}\n", write_operand(operand)).as_bytes())?
+        }
+        Instr::Cdq => file.write_all("\tcdq\n".as_bytes())?,
     }
     Ok(())
 }
@@ -39,6 +52,15 @@ fn write_unop(unop: UnaryOp) -> String {
     match unop {
         UnaryOp::Neg => "negl",
         UnaryOp::Not => "notl",
+    }
+    .to_string()
+}
+
+fn write_binop(binop: BinaryOp) -> String {
+    match binop {
+        BinaryOp::Add => "addl",
+        BinaryOp::Sub => "subl",
+        BinaryOp::Mult => "imull",
     }
     .to_string()
 }
@@ -55,7 +77,9 @@ fn write_operand(op: Operand) -> String {
 fn write_register(reg: Register) -> String {
     match reg {
         Register::AX => "%eax",
+        Register::DX => "%edx",
         Register::R10 => "%r10d",
+        Register::R11 => "%r11d",
     }
     .to_string()
 }

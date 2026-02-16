@@ -11,7 +11,11 @@ pub enum Token<'a> {
     Constant(&'a str),
     Semicolon,
     Tilde,
+    Plus,
     Minus,
+    Star,
+    Slash,
+    Percent,
     DoubleMinus,
 }
 
@@ -123,6 +127,10 @@ impl<'a> Iterator for Lexer<'a> {
                 "{" => return Some(Token::LBrace),
                 "}" => return Some(Token::RBrace),
                 ";" => return Some(Token::Semicolon),
+                "+" => return Some(Token::Plus),
+                "/" => return Some(Token::Slash),
+                "%" => return Some(Token::Percent),
+                "*" => return Some(Token::Star),
                 c => panic!("Bad token {}", c),
             };
         }

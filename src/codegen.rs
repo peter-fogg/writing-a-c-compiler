@@ -17,16 +17,38 @@ pub enum UnaryOp {
 }
 
 #[derive(Debug, PartialEq, Clone, Copy)]
+pub enum BinaryOp {
+    Add,
+    Sub,
+    Mult,
+}
+
+#[derive(Debug, PartialEq, Clone, Copy)]
 pub enum Register {
     AX,
+    DX,
     R10,
+    R11,
 }
 
 #[derive(Debug, PartialEq, Clone)]
 pub enum Instr {
     Ret,
-    Mov { src: Operand, dst: Operand },
-    Unary(UnaryOp, Operand),
+    Mov {
+        src: Operand,
+        dst: Operand,
+    },
+    Unary {
+        unop: UnaryOp,
+        dst: Operand,
+    },
+    Binary {
+        binop: BinaryOp,
+        src: Operand,
+        dst: Operand,
+    },
+    IDiv(Operand),
+    Cdq,
     AllocateStack(u8),
 }
 
@@ -69,20 +91,75 @@ fn assemble_instructions(instructions: Vec<tacky::Instr>) -> Vec<Instr> {
                 });
                 assembly.push(Instr::Ret);
             }
-            tacky::Instr::Unary(unop, src, dst) => {
+            tacky::Instr::Unary { unop, src, dst } => {
                 let dst = assemble_val(dst);
                 assembly.push(Instr::Mov {
                     src: assemble_val(src),
                     dst: dst.clone(),
                 });
-                assembly.push(Instr::Unary(assemble_op(unop), dst));
+                assembly.push(Instr::Unary {
+                    unop: assemble_unop(unop),
+                    dst,
+                });
+            }
+            tacky::Instr::Binary {
+                binop: binop @ (tacky::BinaryOp::Divide | tacky::BinaryOp::Remainder),
+                src1,
+                src2,
+                dst,
+            } => {
+                let dst = assemble_val(dst);
+                let src1 = assemble_val(src1);
+                let src2 = assemble_val(src2);
+                let out_reg = if binop == tacky::BinaryOp::Divide {
+                    Register::AX
+                } else {
+                    Register::DX
+                };
+                assembly.extend(vec![
+                    Instr::Mov {
+                        src: src1,
+                        dst: Operand::Reg(Register::AX),
+                    },
+                    Instr::Cdq,
+                    Instr::IDiv(src2),
+                    Instr::Mov {
+                        src: Operand::Reg(out_reg),
+                        dst,
+                    },
+                ]);
+            }
+            tacky::Instr::Binary {
+                binop,
+                src1,
+                src2,
+                dst,
+            } => {
+                let binop = match binop {
+                    tacky::BinaryOp::Add => BinaryOp::Add,
+                    tacky::BinaryOp::Subtract => BinaryOp::Sub,
+                    tacky::BinaryOp::Multiply => BinaryOp::Mult,
+                    _ => panic!("Expected add, subtract, or multiply, got {:?}", binop),
+                };
+                let dst = assemble_val(dst);
+                assembly.extend(vec![
+                    Instr::Mov {
+                        src: assemble_val(src1),
+                        dst: dst.clone(),
+                    },
+                    Instr::Binary {
+                        binop,
+                        src: assemble_val(src2),
+                        dst,
+                    },
+                ]);
             }
         }
     }
     assembly
 }
 
-fn assemble_op(unop: tacky::UnaryOp) -> UnaryOp {
+fn assemble_unop(unop: tacky::UnaryOp) -> UnaryOp {
     match unop {
         tacky::UnaryOp::Complement => UnaryOp::Not,
         tacky::UnaryOp::Negate => UnaryOp::Neg,
@@ -104,13 +181,41 @@ fn replace_pseudo(instrs: &mut [Instr]) -> u8 {
     };
     for instr in instrs {
         match instr {
-            Instr::Unary(_, _) => {
+            Instr::Unary { unop: _, dst: _ } => {
                 let unary = std::mem::replace(instr, Instr::Ret);
-                let Instr::Unary(unop, operand) = unary else {
+                let Instr::Unary { unop, dst: operand } = unary else {
                     panic!("unreachable")
                 };
                 let new_operand = replace_op(operand, &mut replace_state);
-                *instr = Instr::Unary(unop, new_operand);
+                *instr = Instr::Unary {
+                    unop,
+                    dst: new_operand,
+                };
+            }
+            Instr::Binary {
+                binop: _,
+                src: _,
+                dst: _,
+            } => {
+                let binary = std::mem::replace(instr, Instr::Ret);
+                let Instr::Binary { binop, src, dst } = binary else {
+                    panic!("unreachable");
+                };
+                let new_src = replace_op(src, &mut replace_state);
+                let new_dst = replace_op(dst, &mut replace_state);
+                *instr = Instr::Binary {
+                    binop,
+                    src: new_src,
+                    dst: new_dst,
+                };
+            }
+            Instr::IDiv(_) => {
+                let idiv = std::mem::replace(instr, Instr::Ret);
+                let Instr::IDiv(op) = idiv else {
+                    panic!("unreachable")
+                };
+                let op = replace_op(op, &mut replace_state);
+                *instr = Instr::IDiv(op);
             }
             Instr::Mov { src: _, dst: _ } => {
                 let mov = std::mem::replace(instr, Instr::Ret);
@@ -152,15 +257,60 @@ fn fixup_instructions(instrs: Vec<Instr>) -> Vec<Instr> {
                 src: Operand::Stack(src_off),
                 dst: Operand::Stack(dst_off),
             } => {
-                fixed.push(Instr::Mov {
-                    src: Operand::Stack(src_off),
-                    dst: Operand::Reg(Register::R10),
-                });
-                fixed.push(Instr::Mov {
-                    src: Operand::Reg(Register::R10),
-                    dst: Operand::Stack(dst_off),
-                });
+                fixed.extend(vec![
+                    Instr::Mov {
+                        src: Operand::Stack(src_off),
+                        dst: Operand::Reg(Register::R10),
+                    },
+                    Instr::Mov {
+                        src: Operand::Reg(Register::R10),
+                        dst: Operand::Stack(dst_off),
+                    },
+                ]);
             }
+            Instr::Binary {
+                binop: binop @ (BinaryOp::Add | BinaryOp::Sub),
+                src: Operand::Stack(src_off),
+                dst: Operand::Stack(dst_off),
+            } => {
+                fixed.extend(vec![
+                    Instr::Mov {
+                        src: Operand::Stack(src_off),
+                        dst: Operand::Reg(Register::R10),
+                    },
+                    Instr::Binary {
+                        binop,
+                        src: Operand::Reg(Register::R10),
+                        dst: Operand::Stack(dst_off),
+                    },
+                ]);
+            }
+            Instr::Binary {
+                binop: BinaryOp::Mult,
+                src,
+                dst: Operand::Stack(dst_off),
+            } => fixed.extend(vec![
+                Instr::Mov {
+                    src: Operand::Stack(dst_off),
+                    dst: Operand::Reg(Register::R11),
+                },
+                Instr::Binary {
+                    binop: BinaryOp::Mult,
+                    src,
+                    dst: Operand::Reg(Register::R11),
+                },
+                Instr::Mov {
+                    src: Operand::Reg(Register::R11),
+                    dst: Operand::Stack(dst_off),
+                },
+            ]),
+            Instr::IDiv(Operand::Imm(n)) => fixed.extend(vec![
+                Instr::Mov {
+                    src: Operand::Imm(n),
+                    dst: Operand::Reg(Register::R10),
+                },
+                Instr::IDiv(Operand::Reg(Register::R10)),
+            ]),
             i => fixed.push(i),
         }
     }

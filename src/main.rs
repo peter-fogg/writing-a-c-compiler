@@ -21,6 +21,10 @@ fn main() {
 fn parse_file(text: String, path_str: &str, rest_args: Vec<String>) {
     let tokens = lexer::Lexer::new(&text).peekable();
     let parsed = Parser::new(tokens).parse();
+    if rest_args.iter().any(|s| s == "--show-parsed") {
+        println!("{:?}", parsed);
+        std::process::exit(0);
+    }
     let tacky = tacky::emit_tacky(parsed);
     let assembled = codegen::assemble(tacky);
     if rest_args.iter().any(|s| s == "--show-assembled") {

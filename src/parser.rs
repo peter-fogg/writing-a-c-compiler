@@ -8,10 +8,20 @@ pub enum UnaryOperator {
     Negate,
 }
 
+#[derive(Debug, PartialEq, Clone, Copy)]
+pub enum BinaryOperator {
+    Add,
+    Subtract,
+    Multiply,
+    Divide,
+    Remainder,
+}
+
 #[derive(Debug, PartialEq, Clone)]
 pub enum Expression {
     Constant(i32),
     Unary(UnaryOperator, Box<Expression>),
+    Binary(BinaryOperator, Box<Expression>, Box<Expression>),
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -22,6 +32,15 @@ pub enum Statement {
 #[derive(Debug, PartialEq, Clone)]
 pub enum Program<'a> {
     Function(&'a str, Statement),
+}
+
+#[derive(Debug, PartialEq, PartialOrd, Copy, Clone)]
+enum Prec {
+    Bottom,
+    Expr,
+    AddSub,
+    MultDiv,
+    Top,
 }
 
 type TokenStream<'a> = Peekable<Lexer<'a>>;
@@ -67,7 +86,7 @@ impl<'a> Parser<'a> {
     fn statement(&mut self) -> Statement {
         self.consume(Token::Return);
 
-        let expr = self.expression();
+        let expr = self.expression(Prec::Bottom);
 
         self.consume(Token::Semicolon);
 
@@ -88,21 +107,82 @@ impl<'a> Parser<'a> {
         Expression::Constant(n)
     }
 
-    fn expression(&mut self) -> Expression {
+    fn get_prec(t: Token) -> Prec {
+        match t {
+            Token::Constant(_) => Prec::Expr,
+            Token::Plus | Token::Minus => Prec::AddSub,
+            Token::Percent | Token::Star | Token::Slash => Prec::MultDiv,
+            _ => Prec::Bottom,
+        }
+    }
+
+    fn expression(&mut self, prec: Prec) -> Expression {
+        let mut lhs = self.factor();
+        let mut next = *self
+            .tokens
+            .peek()
+            .unwrap_or_else(|| panic!("Ran out of tokens while parsing expression"));
+        while Self::is_binary_op(&next) && Self::get_prec(next) >= prec {
+            let binop = self.binary_op();
+            let next_prec = Self::get_prec(next);
+            let rhs = self.expression(Self::increment_prec(&next_prec));
+            lhs = Expression::Binary(binop, Box::new(lhs), Box::new(rhs));
+            next = *self
+                .tokens
+                .peek()
+                .unwrap_or_else(|| panic!("Ran out of tokens while parsing expression"));
+        }
+
+        lhs
+    }
+
+    fn increment_prec(prec: &Prec) -> Prec {
+        match prec {
+            Prec::Bottom => Prec::Expr,
+            Prec::Expr => Prec::AddSub,
+            Prec::AddSub => Prec::MultDiv,
+            _ => Prec::Top,
+        }
+    }
+
+    fn is_binary_op(token: &Token) -> bool {
+        [
+            Token::Plus,
+            Token::Minus,
+            Token::Star,
+            Token::Slash,
+            Token::Percent,
+        ]
+        .contains(token)
+    }
+
+    fn factor(&mut self) -> Expression {
         match self.tokens.peek() {
             Some(Token::Constant(_)) => self.constant(),
             Some(Token::LParen) => {
                 self.tokens.next();
-                let sub_expr = self.expression();
+                let sub_expr = self.expression(Prec::Expr);
                 self.consume(Token::RParen);
                 sub_expr
             }
             Some(Token::Tilde | Token::Minus) => {
                 let un_op = self.unary_op();
-                let inner_expr = self.expression();
+                let inner_expr = self.factor();
                 Expression::Unary(un_op, Box::new(inner_expr))
             }
             t => panic!("Unexpected token {:?}", t),
+        }
+    }
+
+    fn binary_op(&mut self) -> BinaryOperator {
+        match self.tokens.next() {
+            None => panic!("Ran out of tokens while parsing expression"),
+            Some(Token::Plus) => BinaryOperator::Add,
+            Some(Token::Minus) => BinaryOperator::Subtract,
+            Some(Token::Star) => BinaryOperator::Multiply,
+            Some(Token::Slash) => BinaryOperator::Divide,
+            Some(Token::Percent) => BinaryOperator::Remainder,
+            Some(t) => panic!("Expected binary operator, got {:?}", t),
         }
     }
 

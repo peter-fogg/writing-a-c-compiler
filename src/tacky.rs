@@ -1,9 +1,18 @@
-use crate::parser::{self, UnaryOperator};
+use crate::parser::{self, BinaryOperator, UnaryOperator};
 
 #[derive(Debug, PartialEq, Clone, Copy)]
 pub enum UnaryOp {
     Complement,
     Negate,
+}
+
+#[derive(Debug, PartialEq, Clone, Copy)]
+pub enum BinaryOp {
+    Add,
+    Subtract,
+    Multiply,
+    Divide,
+    Remainder,
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -15,7 +24,17 @@ pub enum Val {
 #[derive(Debug, PartialEq, Clone)]
 pub enum Instr {
     Return(Val),
-    Unary(UnaryOp, Val, Val),
+    Unary {
+        unop: UnaryOp,
+        src: Val,
+        dst: Val,
+    },
+    Binary {
+        binop: BinaryOp,
+        src1: Val,
+        src2: Val,
+        dst: Val,
+    },
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -53,8 +72,30 @@ impl TackifyState {
                 let dst_name = self.new_temp("tmp");
                 let dst = Val::Var(dst_name);
                 let op = Self::convert_unop(un_op);
-                let new_unop = Instr::Unary(op, src, dst.clone());
+                let new_unop = Instr::Unary {
+                    unop: op,
+                    src,
+                    dst: dst.clone(),
+                };
                 instrs.push(new_unop);
+                dst
+            }
+            parser::Expression::Binary(binop, lhs, rhs) => {
+                let src1 = self.tackify_expr(*lhs, instrs);
+                let src2 = self.tackify_expr(*rhs, instrs);
+                let dst = Val::Var(self.new_temp("tmp"));
+
+                let op = Self::convert_binop(binop);
+
+                let new_binop = Instr::Binary {
+                    binop: op,
+                    src1,
+                    src2,
+                    dst: dst.clone(),
+                };
+
+                instrs.push(new_binop);
+
                 dst
             }
         }
@@ -70,6 +111,16 @@ impl TackifyState {
         match unop {
             UnaryOperator::Complement => UnaryOp::Complement,
             UnaryOperator::Negate => UnaryOp::Negate,
+        }
+    }
+
+    fn convert_binop(binop: parser::BinaryOperator) -> BinaryOp {
+        match binop {
+            BinaryOperator::Add => BinaryOp::Add,
+            BinaryOperator::Subtract => BinaryOp::Subtract,
+            BinaryOperator::Multiply => BinaryOp::Multiply,
+            BinaryOperator::Divide => BinaryOp::Divide,
+            BinaryOperator::Remainder => BinaryOp::Remainder,
         }
     }
 }
