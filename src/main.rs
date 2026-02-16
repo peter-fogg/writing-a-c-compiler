@@ -26,6 +26,10 @@ fn parse_file(text: String, path_str: &str, rest_args: Vec<String>) {
         std::process::exit(0);
     }
     let tacky = tacky::emit_tacky(parsed);
+    if rest_args.iter().any(|s| s == "--show-tackified") {
+        println!("{:?}", tacky);
+        std::process::exit(0);
+    }
     let assembled = codegen::assemble(tacky);
     if rest_args.iter().any(|s| s == "--show-assembled") {
         println!("{:?}", assembled);

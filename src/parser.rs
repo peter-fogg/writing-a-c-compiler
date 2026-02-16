@@ -15,6 +15,11 @@ pub enum BinaryOperator {
     Multiply,
     Divide,
     Remainder,
+    BitAnd,
+    BitOr,
+    BitXOr,
+    ShiftLeft,
+    ShiftRight,
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -38,6 +43,10 @@ pub enum Program<'a> {
 enum Prec {
     Bottom,
     Expr,
+    BitOr,
+    BitXOr,
+    BitAnd,
+    Shift,
     AddSub,
     MultDiv,
     Top,
@@ -112,6 +121,11 @@ impl<'a> Parser<'a> {
             Token::Constant(_) => Prec::Expr,
             Token::Plus | Token::Minus => Prec::AddSub,
             Token::Percent | Token::Star | Token::Slash => Prec::MultDiv,
+            Token::Pipe => Prec::BitOr,
+            Token::Ampersand => Prec::BitAnd,
+            Token::Caret => Prec::BitXOr,
+            Token::DoubleLAngle => Prec::Shift,
+            Token::DoubleRAngle => Prec::Shift,
             _ => Prec::Bottom,
         }
     }
@@ -139,7 +153,11 @@ impl<'a> Parser<'a> {
     fn increment_prec(prec: &Prec) -> Prec {
         match prec {
             Prec::Bottom => Prec::Expr,
-            Prec::Expr => Prec::AddSub,
+            Prec::Expr => Prec::BitOr,
+            Prec::BitOr => Prec::BitXOr,
+            Prec::BitXOr => Prec::BitAnd,
+            Prec::BitAnd => Prec::Shift,
+            Prec::Shift => Prec::AddSub,
             Prec::AddSub => Prec::MultDiv,
             _ => Prec::Top,
         }
@@ -152,6 +170,11 @@ impl<'a> Parser<'a> {
             Token::Star,
             Token::Slash,
             Token::Percent,
+            Token::Ampersand,
+            Token::Pipe,
+            Token::Caret,
+            Token::DoubleLAngle,
+            Token::DoubleRAngle,
         ]
         .contains(token)
     }
@@ -182,6 +205,11 @@ impl<'a> Parser<'a> {
             Some(Token::Star) => BinaryOperator::Multiply,
             Some(Token::Slash) => BinaryOperator::Divide,
             Some(Token::Percent) => BinaryOperator::Remainder,
+            Some(Token::Ampersand) => BinaryOperator::BitAnd,
+            Some(Token::Pipe) => BinaryOperator::BitOr,
+            Some(Token::Caret) => BinaryOperator::BitXOr,
+            Some(Token::DoubleLAngle) => BinaryOperator::ShiftLeft,
+            Some(Token::DoubleRAngle) => BinaryOperator::ShiftRight,
             Some(t) => panic!("Expected binary operator, got {:?}", t),
         }
     }

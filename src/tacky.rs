@@ -13,6 +13,11 @@ pub enum BinaryOp {
     Multiply,
     Divide,
     Remainder,
+    BitAnd,
+    BitOr,
+    BitXOr,
+    ShiftLeft,
+    ShiftRight,
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -121,6 +126,11 @@ impl TackifyState {
             BinaryOperator::Multiply => BinaryOp::Multiply,
             BinaryOperator::Divide => BinaryOp::Divide,
             BinaryOperator::Remainder => BinaryOp::Remainder,
+            BinaryOperator::BitAnd => BinaryOp::BitAnd,
+            BinaryOperator::BitOr => BinaryOp::BitOr,
+            BinaryOperator::BitXOr => BinaryOp::BitXOr,
+            BinaryOperator::ShiftLeft => BinaryOp::ShiftLeft,
+            BinaryOperator::ShiftRight => BinaryOp::ShiftRight,
         }
     }
 }

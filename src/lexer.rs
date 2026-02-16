@@ -17,6 +17,13 @@ pub enum Token<'a> {
     Slash,
     Percent,
     DoubleMinus,
+    Ampersand,
+    Pipe,
+    RAngle,
+    LAngle,
+    DoubleRAngle,
+    DoubleLAngle,
+    Caret,
 }
 
 #[derive(Debug)]
@@ -121,6 +128,22 @@ impl<'a> Iterator for Lexer<'a> {
                         return Some(Token::Minus);
                     }
                 }
+                "<" => {
+                    if let Some("<") = self.peek() {
+                        self.next_char();
+                        return Some(Token::DoubleLAngle);
+                    } else {
+                        return Some(Token::LAngle);
+                    }
+                }
+                ">" => {
+                    if let Some(">") = self.peek() {
+                        self.next_char();
+                        return Some(Token::DoubleRAngle);
+                    } else {
+                        return Some(Token::RAngle);
+                    }
+                }
                 "~" => return Some(Token::Tilde),
                 "(" => return Some(Token::LParen),
                 ")" => return Some(Token::RParen),
@@ -131,6 +154,9 @@ impl<'a> Iterator for Lexer<'a> {
                 "/" => return Some(Token::Slash),
                 "%" => return Some(Token::Percent),
                 "*" => return Some(Token::Star),
+                "&" => return Some(Token::Ampersand),
+                "|" => return Some(Token::Pipe),
+                "^" => return Some(Token::Caret),
                 c => panic!("Bad token {}", c),
             };
         }

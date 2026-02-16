@@ -21,6 +21,11 @@ pub enum BinaryOp {
     Add,
     Sub,
     Mult,
+    BitAnd,
+    BitOr,
+    BitXOr,
+    ShiftLeft,
+    ShiftRight,
 }
 
 #[derive(Debug, PartialEq, Clone, Copy)]
@@ -29,6 +34,8 @@ pub enum Register {
     DX,
     R10,
     R11,
+    CL,
+    CX,
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -130,6 +137,34 @@ fn assemble_instructions(instructions: Vec<tacky::Instr>) -> Vec<Instr> {
                 ]);
             }
             tacky::Instr::Binary {
+                binop: binop @ (tacky::BinaryOp::ShiftLeft | tacky::BinaryOp::ShiftRight),
+                src1,
+                src2,
+                dst,
+            } => {
+                let binop = match binop {
+                    tacky::BinaryOp::ShiftLeft => BinaryOp::ShiftLeft,
+                    tacky::BinaryOp::ShiftRight => BinaryOp::ShiftRight,
+                    _ => panic!("unreachable"),
+                };
+                let dst = assemble_val(dst);
+                assembly.extend(vec![
+                    Instr::Mov {
+                        src: assemble_val(src2),
+                        dst: Operand::Reg(Register::CX),
+                    },
+                    Instr::Mov {
+                        src: assemble_val(src1),
+                        dst: dst.clone(),
+                    },
+                    Instr::Binary {
+                        binop,
+                        src: Operand::Reg(Register::CL),
+                        dst,
+                    },
+                ])
+            }
+            tacky::Instr::Binary {
                 binop,
                 src1,
                 src2,
@@ -139,7 +174,13 @@ fn assemble_instructions(instructions: Vec<tacky::Instr>) -> Vec<Instr> {
                     tacky::BinaryOp::Add => BinaryOp::Add,
                     tacky::BinaryOp::Subtract => BinaryOp::Sub,
                     tacky::BinaryOp::Multiply => BinaryOp::Mult,
-                    _ => panic!("Expected add, subtract, or multiply, got {:?}", binop),
+                    tacky::BinaryOp::BitAnd => BinaryOp::BitAnd,
+                    tacky::BinaryOp::BitOr => BinaryOp::BitOr,
+                    tacky::BinaryOp::BitXOr => BinaryOp::BitXOr,
+                    _ => panic!(
+                        "Expected add, subtract, multiply, or bitwise op, got {:?}",
+                        binop
+                    ),
                 };
                 let dst = assemble_val(dst);
                 assembly.extend(vec![
@@ -269,7 +310,12 @@ fn fixup_instructions(instrs: Vec<Instr>) -> Vec<Instr> {
                 ]);
             }
             Instr::Binary {
-                binop: binop @ (BinaryOp::Add | BinaryOp::Sub),
+                binop:
+                    binop @ (BinaryOp::Add
+                    | BinaryOp::Sub
+                    | BinaryOp::BitAnd
+                    | BinaryOp::BitOr
+                    | BinaryOp::BitXOr),
                 src: Operand::Stack(src_off),
                 dst: Operand::Stack(dst_off),
             } => {

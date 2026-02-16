@@ -61,6 +61,11 @@ fn write_binop(binop: BinaryOp) -> String {
         BinaryOp::Add => "addl",
         BinaryOp::Sub => "subl",
         BinaryOp::Mult => "imull",
+        BinaryOp::BitAnd => "andl",
+        BinaryOp::BitOr => "orl",
+        BinaryOp::BitXOr => "xorl",
+        BinaryOp::ShiftLeft => "shll",
+        BinaryOp::ShiftRight => "sarl",
     }
     .to_string()
 }
@@ -80,6 +85,8 @@ fn write_register(reg: Register) -> String {
         Register::DX => "%edx",
         Register::R10 => "%r10d",
         Register::R11 => "%r11d",
+        Register::CX => "%ecx",
+        Register::CL => "%cl",
     }
     .to_string()
 }
