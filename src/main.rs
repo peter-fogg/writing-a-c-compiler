@@ -10,37 +10,56 @@ mod tacky;
 
 fn main() {
     let mut args = env::args().collect::<Vec<String>>();
-    let path = &args[1].clone();
-    let data = fs::read_to_string(path);
+    let c_path = &args[1].clone();
+    let path = path::Path::new(c_path);
+    let i_path = path.with_extension("i");
+    std::process::Command::new("gcc")
+        .args(["-E", "-P", c_path, "-o", i_path.to_str().unwrap()])
+        .output()
+        .expect("Failed to preprocess .c file");
+    let data = fs::read_to_string(i_path);
+    let s_path = path.with_extension("s");
     match data {
-        Ok(text) => parse_file(text, path, args.drain(2..).collect()),
+        Ok(text) => compile_file(text, &s_path, args.drain(2..).collect()),
         Err(err) => println!("Error reading source file: [{}]", err),
     }
+    let out_path = path.with_extension("");
+    std::process::Command::new("arch")
+        .args([
+            "-x86_64",
+            "gcc",
+            s_path.to_str().unwrap(),
+            "-o",
+            out_path.to_str().unwrap(),
+        ])
+        .output()
+        .expect("Failed to assemble .s file");
+    std::process::Command::new(out_path.to_str().unwrap())
+        .output()
+        .expect("Failed to run executable");
 }
 
-fn parse_file(text: String, path_str: &str, rest_args: Vec<String>) {
+fn compile_file(text: String, assembly_path: &path::Path, rest_args: Vec<String>) {
     let lexed = lexer::Lexer::new(&text).peekable();
-    if rest_args.iter().any(|s| s == "--show-lexed") {
+    if rest_args.iter().any(|s| s == "--lex") {
         println!("{:?}", lexed);
         std::process::exit(0);
     }
     let parsed = Parser::new(lexed).parse();
-    if rest_args.iter().any(|s| s == "--show-parsed") {
+    if rest_args.iter().any(|s| s == "--parse") {
         println!("{:?}", parsed);
         std::process::exit(0);
     }
     let tackified = tacky::emit_tacky(parsed);
-    if rest_args.iter().any(|s| s == "--show-tackified") {
+    if rest_args.iter().any(|s| s == "--tackify") {
         println!("{:?}", tackified);
         std::process::exit(0);
     }
     let assembled = codegen::assemble(tackified);
-    if rest_args.iter().any(|s| s == "--show-assembled") {
+    if rest_args.iter().any(|s| s == "--codegen") {
         println!("{:?}", assembled);
         std::process::exit(0);
     }
-    let path = path::Path::new(path_str);
-    let assembly_path = path.with_extension("S");
     let result = emit::emit(
         assembled,
         fs::File::create(assembly_path).expect("Error opening .s file"),
