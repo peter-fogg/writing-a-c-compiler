@@ -18,12 +18,20 @@ pub enum Token<'a> {
     Percent,
     DoubleMinus,
     Ampersand,
+    DoubleAmpersand,
     Pipe,
+    DoublePipe,
     RAngle,
     LAngle,
     DoubleRAngle,
     DoubleLAngle,
     Caret,
+    Bang,
+    BangEquals,
+    Equals,
+    DoubleEquals,
+    RAngleEquals,
+    LAngleEquals,
 }
 
 #[derive(Debug)]
@@ -132,6 +140,9 @@ impl<'a> Iterator for Lexer<'a> {
                     if let Some("<") = self.peek() {
                         self.next_char();
                         return Some(Token::DoubleLAngle);
+                    } else if let Some("=") = self.peek() {
+                        self.next_char();
+                        return Some(Token::LAngleEquals);
                     } else {
                         return Some(Token::LAngle);
                     }
@@ -140,8 +151,43 @@ impl<'a> Iterator for Lexer<'a> {
                     if let Some(">") = self.peek() {
                         self.next_char();
                         return Some(Token::DoubleRAngle);
+                    } else if let Some("=") = self.peek() {
+                        self.next_char();
+                        return Some(Token::RAngleEquals);
                     } else {
                         return Some(Token::RAngle);
+                    }
+                }
+                "&" => {
+                    if let Some("&") = self.peek() {
+                        self.next_char();
+                        return Some(Token::DoubleAmpersand);
+                    } else {
+                        return Some(Token::Ampersand);
+                    }
+                }
+                "|" => {
+                    if let Some("|") = self.peek() {
+                        self.next_char();
+                        return Some(Token::DoublePipe);
+                    } else {
+                        return Some(Token::Pipe);
+                    }
+                }
+                "=" => {
+                    if let Some("=") = self.peek() {
+                        self.next_char();
+                        return Some(Token::DoubleEquals);
+                    } else {
+                        return Some(Token::Equals);
+                    }
+                }
+                "!" => {
+                    if let Some("=") = self.peek() {
+                        self.next_char();
+                        return Some(Token::BangEquals);
+                    } else {
+                        return Some(Token::Bang);
                     }
                 }
                 "~" => return Some(Token::Tilde),
@@ -154,8 +200,6 @@ impl<'a> Iterator for Lexer<'a> {
                 "/" => return Some(Token::Slash),
                 "%" => return Some(Token::Percent),
                 "*" => return Some(Token::Star),
-                "&" => return Some(Token::Ampersand),
-                "|" => return Some(Token::Pipe),
                 "^" => return Some(Token::Caret),
                 c => panic!("Bad token {}", c),
             };

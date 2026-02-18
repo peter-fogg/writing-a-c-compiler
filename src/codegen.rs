@@ -38,6 +38,16 @@ pub enum Register {
     CX,
 }
 
+#[derive(Debug, PartialEq, Clone, Copy)]
+pub enum CondCode {
+    E,
+    NE,
+    G,
+    GE,
+    L,
+    LE,
+}
+
 #[derive(Debug, PartialEq, Clone)]
 pub enum Instr {
     Ret,
@@ -57,6 +67,14 @@ pub enum Instr {
     IDiv(Operand),
     Cdq,
     AllocateStack(u8),
+    Jmp(String),
+    JmpCC(CondCode, String),
+    SetCC(CondCode, Operand),
+    Label(String),
+    Cmp {
+        lhs: Operand,
+        rhs: Operand,
+    },
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -98,6 +116,27 @@ fn assemble_instructions(instructions: Vec<tacky::Instr>) -> Vec<Instr> {
                 });
                 assembly.push(Instr::Ret);
             }
+            tacky::Instr::Jump { target } => assembly.push(Instr::Jmp(target)),
+            tacky::Instr::Copy { src, dst } => assembly.push(Instr::Mov {
+                src: assemble_val(src),
+                dst: assemble_val(dst),
+            }),
+            tacky::Instr::Label(id) => assembly.push(Instr::Label(id)),
+            tacky::Instr::Unary {
+                unop: tacky::UnaryOp::Not,
+                src,
+                dst,
+            } => assembly.extend(vec![
+                Instr::Cmp {
+                    lhs: Operand::Imm(0),
+                    rhs: assemble_val(src),
+                },
+                Instr::Mov {
+                    src: Operand::Imm(0),
+                    dst: assemble_val(dst.clone()),
+                },
+                Instr::SetCC(CondCode::E, assemble_val(dst)),
+            ]),
             tacky::Instr::Unary { unop, src, dst } => {
                 let dst = assemble_val(dst);
                 assembly.push(Instr::Mov {
@@ -169,6 +208,33 @@ fn assemble_instructions(instructions: Vec<tacky::Instr>) -> Vec<Instr> {
                 src1,
                 src2,
                 dst,
+            } if is_comparison(binop) => {
+                let code = match binop {
+                    tacky::BinaryOp::Equals => CondCode::E,
+                    tacky::BinaryOp::NotEquals => CondCode::NE,
+                    tacky::BinaryOp::GreaterThan => CondCode::G,
+                    tacky::BinaryOp::GreaterThanEquals => CondCode::GE,
+                    tacky::BinaryOp::LessThan => CondCode::L,
+                    tacky::BinaryOp::LessThanEquals => CondCode::LE,
+                    _ => unreachable!(),
+                };
+                assembly.extend(vec![
+                    Instr::Cmp {
+                        lhs: assemble_val(src2),
+                        rhs: assemble_val(src1),
+                    },
+                    Instr::Mov {
+                        src: Operand::Imm(0),
+                        dst: assemble_val(dst.clone()),
+                    },
+                    Instr::SetCC(code, assemble_val(dst)),
+                ]);
+            }
+            tacky::Instr::Binary {
+                binop,
+                src1,
+                src2,
+                dst,
             } => {
                 let binop = match binop {
                     tacky::BinaryOp::Add => BinaryOp::Add,
@@ -195,15 +261,42 @@ fn assemble_instructions(instructions: Vec<tacky::Instr>) -> Vec<Instr> {
                     },
                 ]);
             }
+            tacky::Instr::JumpIfZero { condition, target } => assembly.extend(vec![
+                Instr::Cmp {
+                    lhs: Operand::Imm(0),
+                    rhs: assemble_val(condition),
+                },
+                Instr::JmpCC(CondCode::E, target),
+            ]),
+            tacky::Instr::JumpIfNotZero { condition, target } => assembly.extend(vec![
+                Instr::Cmp {
+                    lhs: Operand::Imm(0),
+                    rhs: assemble_val(condition),
+                },
+                Instr::JmpCC(CondCode::NE, target),
+            ]),
         }
     }
     assembly
+}
+
+fn is_comparison(binop: tacky::BinaryOp) -> bool {
+    matches!(
+        binop,
+        tacky::BinaryOp::Equals
+            | tacky::BinaryOp::GreaterThan
+            | tacky::BinaryOp::GreaterThanEquals
+            | tacky::BinaryOp::LessThan
+            | tacky::BinaryOp::LessThanEquals
+            | tacky::BinaryOp::NotEquals
+    )
 }
 
 fn assemble_unop(unop: tacky::UnaryOp) -> UnaryOp {
     match unop {
         tacky::UnaryOp::Complement => UnaryOp::Not,
         tacky::UnaryOp::Negate => UnaryOp::Neg,
+        unop => panic!("Can't assemble {:?}", unop),
     }
 }
 
@@ -269,6 +362,26 @@ fn replace_pseudo(instrs: &mut [Instr]) -> u8 {
                     src: new_src,
                     dst: new_dst,
                 };
+            }
+            Instr::Cmp { lhs: _, rhs: _ } => {
+                let cmp = std::mem::replace(instr, Instr::Ret);
+                let Instr::Cmp { lhs, rhs } = cmp else {
+                    unreachable!()
+                };
+                let new_lhs = replace_op(lhs, &mut replace_state);
+                let new_rhs = replace_op(rhs, &mut replace_state);
+                *instr = Instr::Cmp {
+                    lhs: new_lhs,
+                    rhs: new_rhs,
+                };
+            }
+            Instr::SetCC(_, _) => {
+                let setcc = std::mem::replace(instr, Instr::Ret);
+                let Instr::SetCC(cond_code, operand) = setcc else {
+                    unreachable!();
+                };
+                let operand = replace_op(operand, &mut replace_state);
+                *instr = Instr::SetCC(cond_code, operand);
             }
             _ => (),
         }
@@ -356,6 +469,33 @@ fn fixup_instructions(instrs: Vec<Instr>) -> Vec<Instr> {
                     dst: Operand::Reg(Register::R10),
                 },
                 Instr::IDiv(Operand::Reg(Register::R10)),
+            ]),
+
+            Instr::Cmp {
+                lhs,
+                rhs: Operand::Imm(n),
+            } => fixed.extend(vec![
+                Instr::Mov {
+                    src: Operand::Imm(n),
+                    dst: Operand::Reg(Register::R11),
+                },
+                Instr::Cmp {
+                    lhs,
+                    rhs: Operand::Reg(Register::R11),
+                },
+            ]),
+            Instr::Cmp {
+                lhs: Operand::Stack(lhs_off),
+                rhs: Operand::Stack(rhs_off),
+            } => fixed.extend(vec![
+                Instr::Mov {
+                    src: Operand::Stack(lhs_off),
+                    dst: Operand::Reg(Register::R10),
+                },
+                Instr::Cmp {
+                    lhs: Operand::Reg(Register::R10),
+                    rhs: Operand::Stack(rhs_off),
+                },
             ]),
             i => fixed.push(i),
         }

@@ -6,6 +6,7 @@ use crate::lexer::{Lexer, Token};
 pub enum UnaryOperator {
     Complement,
     Negate,
+    Not,
 }
 
 #[derive(Debug, PartialEq, Clone, Copy)]
@@ -20,6 +21,14 @@ pub enum BinaryOperator {
     BitXOr,
     ShiftLeft,
     ShiftRight,
+    And,
+    Or,
+    Equal,
+    NotEqual,
+    Less,
+    LessOrEqual,
+    Greater,
+    GreaterOrEqual,
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -43,9 +52,13 @@ pub enum Program<'a> {
 enum Prec {
     Bottom,
     Expr,
+    Or,
+    And,
     BitOr,
     BitXOr,
     BitAnd,
+    Equals,
+    Comparison,
     Shift,
     AddSub,
     MultDiv,
@@ -124,8 +137,13 @@ impl<'a> Parser<'a> {
             Token::Pipe => Prec::BitOr,
             Token::Ampersand => Prec::BitAnd,
             Token::Caret => Prec::BitXOr,
-            Token::DoubleLAngle => Prec::Shift,
-            Token::DoubleRAngle => Prec::Shift,
+            Token::DoubleLAngle | Token::DoubleRAngle => Prec::Shift,
+            Token::DoubleEquals | Token::BangEquals => Prec::Equals,
+            Token::LAngleEquals | Token::LAngle | Token::RAngleEquals | Token::RAngle => {
+                Prec::Comparison
+            }
+            Token::DoubleAmpersand => Prec::And,
+            Token::DoublePipe => Prec::Or,
             _ => Prec::Bottom,
         }
     }
@@ -153,10 +171,14 @@ impl<'a> Parser<'a> {
     fn increment_prec(prec: &Prec) -> Prec {
         match prec {
             Prec::Bottom => Prec::Expr,
-            Prec::Expr => Prec::BitOr,
+            Prec::Expr => Prec::Or,
+            Prec::Or => Prec::And,
+            Prec::And => Prec::BitOr,
             Prec::BitOr => Prec::BitXOr,
             Prec::BitXOr => Prec::BitAnd,
-            Prec::BitAnd => Prec::Shift,
+            Prec::BitAnd => Prec::Equals,
+            Prec::Equals => Prec::Comparison,
+            Prec::Comparison => Prec::Shift,
             Prec::Shift => Prec::AddSub,
             Prec::AddSub => Prec::MultDiv,
             _ => Prec::Top,
@@ -175,6 +197,14 @@ impl<'a> Parser<'a> {
             Token::Caret,
             Token::DoubleLAngle,
             Token::DoubleRAngle,
+            Token::BangEquals,
+            Token::DoubleEquals,
+            Token::DoubleAmpersand,
+            Token::DoublePipe,
+            Token::RAngle,
+            Token::RAngleEquals,
+            Token::LAngle,
+            Token::LAngleEquals,
         ]
         .contains(token)
     }
@@ -188,7 +218,7 @@ impl<'a> Parser<'a> {
                 self.consume(Token::RParen);
                 sub_expr
             }
-            Some(Token::Tilde | Token::Minus) => {
+            Some(Token::Tilde | Token::Minus | Token::Bang) => {
                 let un_op = self.unary_op();
                 let inner_expr = self.factor();
                 Expression::Unary(un_op, Box::new(inner_expr))
@@ -210,6 +240,14 @@ impl<'a> Parser<'a> {
             Some(Token::Caret) => BinaryOperator::BitXOr,
             Some(Token::DoubleLAngle) => BinaryOperator::ShiftLeft,
             Some(Token::DoubleRAngle) => BinaryOperator::ShiftRight,
+            Some(Token::DoubleAmpersand) => BinaryOperator::And,
+            Some(Token::DoublePipe) => BinaryOperator::Or,
+            Some(Token::DoubleEquals) => BinaryOperator::Equal,
+            Some(Token::BangEquals) => BinaryOperator::NotEqual,
+            Some(Token::RAngle) => BinaryOperator::Greater,
+            Some(Token::RAngleEquals) => BinaryOperator::GreaterOrEqual,
+            Some(Token::LAngle) => BinaryOperator::Less,
+            Some(Token::LAngleEquals) => BinaryOperator::LessOrEqual,
             Some(t) => panic!("Expected binary operator, got {:?}", t),
         }
     }
@@ -218,6 +256,7 @@ impl<'a> Parser<'a> {
         match self.tokens.next() {
             Some(Token::Tilde) => UnaryOperator::Complement,
             Some(Token::Minus) => UnaryOperator::Negate,
+            Some(Token::Bang) => UnaryOperator::Not,
             _ => panic!("unreachable"),
         }
     }

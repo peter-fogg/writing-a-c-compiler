@@ -4,6 +4,7 @@ use crate::parser::{self, BinaryOperator, UnaryOperator};
 pub enum UnaryOp {
     Complement,
     Negate,
+    Not,
 }
 
 #[derive(Debug, PartialEq, Clone, Copy)]
@@ -18,6 +19,12 @@ pub enum BinaryOp {
     BitXOr,
     ShiftLeft,
     ShiftRight,
+    LessThan,
+    LessThanEquals,
+    GreaterThan,
+    GreaterThanEquals,
+    Equals,
+    NotEquals,
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -40,6 +47,22 @@ pub enum Instr {
         src2: Val,
         dst: Val,
     },
+    Copy {
+        src: Val,
+        dst: Val,
+    },
+    Jump {
+        target: String,
+    },
+    JumpIfZero {
+        condition: Val,
+        target: String,
+    },
+    JumpIfNotZero {
+        condition: Val,
+        target: String,
+    },
+    Label(String),
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -85,6 +108,73 @@ impl TackifyState {
                 instrs.push(new_unop);
                 dst
             }
+            parser::Expression::Binary(BinaryOperator::And, lhs, rhs) => {
+                let end_label = self.new_temp("and_end");
+                let false_label = self.new_temp("and_false");
+                let ret_val = Val::Var(self.new_temp("and_result"));
+
+                let lhs = self.tackify_expr(*lhs, instrs);
+
+                instrs.push(Instr::JumpIfZero {
+                    condition: lhs,
+                    target: false_label.clone(),
+                });
+                let rhs = self.tackify_expr(*rhs, instrs);
+                instrs.extend(vec![
+                    Instr::JumpIfZero {
+                        condition: rhs,
+                        target: false_label.clone(),
+                    },
+                    Instr::Copy {
+                        src: Val::Constant(1),
+                        dst: ret_val.clone(),
+                    },
+                    Instr::Jump {
+                        target: end_label.clone(),
+                    },
+                    Instr::Label(false_label),
+                    Instr::Copy {
+                        src: Val::Constant(0),
+                        dst: ret_val.clone(),
+                    },
+                    Instr::Label(end_label),
+                ]);
+
+                ret_val
+            }
+            parser::Expression::Binary(BinaryOperator::Or, lhs, rhs) => {
+                let end_label = self.new_temp("or_end");
+                let true_label = self.new_temp("or_true");
+                let ret_val = Val::Var(self.new_temp("or_result"));
+
+                let lhs = self.tackify_expr(*lhs, instrs);
+                instrs.push(Instr::JumpIfNotZero {
+                    condition: lhs,
+                    target: true_label.clone(),
+                });
+                let rhs = self.tackify_expr(*rhs, instrs);
+                instrs.extend(vec![
+                    Instr::JumpIfNotZero {
+                        condition: rhs,
+                        target: true_label.clone(),
+                    },
+                    Instr::Copy {
+                        src: Val::Constant(0),
+                        dst: ret_val.clone(),
+                    },
+                    Instr::Jump {
+                        target: end_label.clone(),
+                    },
+                    Instr::Label(true_label),
+                    Instr::Copy {
+                        src: Val::Constant(1),
+                        dst: ret_val.clone(),
+                    },
+                    Instr::Label(end_label),
+                ]);
+
+                ret_val
+            }
             parser::Expression::Binary(binop, lhs, rhs) => {
                 let src1 = self.tackify_expr(*lhs, instrs);
                 let src2 = self.tackify_expr(*rhs, instrs);
@@ -116,6 +206,7 @@ impl TackifyState {
         match unop {
             UnaryOperator::Complement => UnaryOp::Complement,
             UnaryOperator::Negate => UnaryOp::Negate,
+            UnaryOperator::Not => UnaryOp::Not,
         }
     }
 
@@ -131,6 +222,13 @@ impl TackifyState {
             BinaryOperator::BitXOr => BinaryOp::BitXOr,
             BinaryOperator::ShiftLeft => BinaryOp::ShiftLeft,
             BinaryOperator::ShiftRight => BinaryOp::ShiftRight,
+            BinaryOperator::Equal => BinaryOp::Equals,
+            BinaryOperator::NotEqual => BinaryOp::NotEquals,
+            BinaryOperator::Greater => BinaryOp::GreaterThan,
+            BinaryOperator::Less => BinaryOp::LessThan,
+            BinaryOperator::GreaterOrEqual => BinaryOp::GreaterThanEquals,
+            BinaryOperator::LessOrEqual => BinaryOp::LessThanEquals,
+            _ => todo!(),
         }
     }
 }
