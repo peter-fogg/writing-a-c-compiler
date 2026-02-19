@@ -10,7 +10,7 @@ mod tacky;
 
 fn main() {
     let mut args = env::args().collect::<Vec<String>>();
-    let c_path = &args[1].clone();
+    let c_path = &args.pop().unwrap().clone();
     let path = path::Path::new(c_path);
     let i_path = path.with_extension("i");
     std::process::Command::new("gcc")
@@ -20,7 +20,7 @@ fn main() {
     let data = fs::read_to_string(i_path);
     let s_path = path.with_extension("s");
     match data {
-        Ok(text) => compile_file(text, &s_path, args.drain(2..).collect()),
+        Ok(text) => compile_file(text, &s_path, args),
         Err(err) => println!("Error reading source file: [{}]", err),
     }
     let out_path = path.with_extension("");
@@ -42,7 +42,7 @@ fn main() {
 fn compile_file(text: String, assembly_path: &path::Path, rest_args: Vec<String>) {
     let lexed = lexer::Lexer::new(&text).peekable();
     if rest_args.iter().any(|s| s == "--lex") {
-        println!("{:?}", lexed);
+        println!("{:?}", lexed.collect::<Vec<_>>());
         std::process::exit(0);
     }
     let parsed = Parser::new(lexed).parse();
