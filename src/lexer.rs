@@ -32,6 +32,16 @@ pub enum Token<'a> {
     DoubleEquals,
     RAngleEquals,
     LAngleEquals,
+    PlusEquals,
+    MinusEquals,
+    StarEquals,
+    SlashEquals,
+    PercentEquals,
+    AmpersandEquals,
+    PipeEquals,
+    CaretEquals,
+    DoubleLAngleEquals,
+    DoubleRAngleEquals,
 }
 
 #[derive(Debug)]
@@ -105,6 +115,22 @@ impl<'a> Lexer<'a> {
     pub fn is_alpha(s: &'a str) -> bool {
         "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_".contains(s)
     }
+
+    pub fn check_next_char(
+        &mut self,
+        next_char: &'static str,
+        present: Token<'a>,
+        absent: Token<'a>,
+    ) -> Token<'a> {
+        if let Some(c) = self.peek()
+            && c == next_char
+        {
+            self.next_char();
+            present
+        } else {
+            absent
+        }
+    }
 }
 
 impl<'a> Iterator for Lexer<'a> {
@@ -135,29 +161,31 @@ impl<'a> Iterator for Lexer<'a> {
                         self.next_char();
                         return Some(Token::DoubleMinus);
                     } else {
-                        return Some(Token::Minus);
+                        return Some(self.check_next_char("=", Token::MinusEquals, Token::Minus));
                     }
                 }
                 "<" => {
                     if let Some("<") = self.peek() {
                         self.next_char();
-                        return Some(Token::DoubleLAngle);
-                    } else if let Some("=") = self.peek() {
-                        self.next_char();
-                        return Some(Token::LAngleEquals);
+                        return Some(self.check_next_char(
+                            "=",
+                            Token::DoubleLAngleEquals,
+                            Token::DoubleLAngle,
+                        ));
                     } else {
-                        return Some(Token::LAngle);
+                        return Some(self.check_next_char("=", Token::LAngleEquals, Token::LAngle));
                     }
                 }
                 ">" => {
                     if let Some(">") = self.peek() {
                         self.next_char();
-                        return Some(Token::DoubleRAngle);
-                    } else if let Some("=") = self.peek() {
-                        self.next_char();
-                        return Some(Token::RAngleEquals);
+                        return Some(self.check_next_char(
+                            "=",
+                            Token::DoubleRAngleEquals,
+                            Token::DoubleRAngle,
+                        ));
                     } else {
-                        return Some(Token::RAngle);
+                        return Some(self.check_next_char("=", Token::RAngleEquals, Token::RAngle));
                     }
                 }
                 "&" => {
@@ -165,7 +193,11 @@ impl<'a> Iterator for Lexer<'a> {
                         self.next_char();
                         return Some(Token::DoubleAmpersand);
                     } else {
-                        return Some(Token::Ampersand);
+                        return Some(self.check_next_char(
+                            "=",
+                            Token::AmpersandEquals,
+                            Token::Ampersand,
+                        ));
                     }
                 }
                 "|" => {
@@ -173,24 +205,14 @@ impl<'a> Iterator for Lexer<'a> {
                         self.next_char();
                         return Some(Token::DoublePipe);
                     } else {
-                        return Some(Token::Pipe);
+                        return Some(self.check_next_char("=", Token::PipeEquals, Token::Pipe));
                     }
                 }
                 "=" => {
-                    if let Some("=") = self.peek() {
-                        self.next_char();
-                        return Some(Token::DoubleEquals);
-                    } else {
-                        return Some(Token::Equals);
-                    }
+                    return Some(self.check_next_char("=", Token::DoubleEquals, Token::Equals));
                 }
                 "!" => {
-                    if let Some("=") = self.peek() {
-                        self.next_char();
-                        return Some(Token::BangEquals);
-                    } else {
-                        return Some(Token::Bang);
-                    }
+                    return Some(self.check_next_char("=", Token::BangEquals, Token::Bang));
                 }
                 "~" => return Some(Token::Tilde),
                 "(" => return Some(Token::LParen),
@@ -198,11 +220,13 @@ impl<'a> Iterator for Lexer<'a> {
                 "{" => return Some(Token::LBrace),
                 "}" => return Some(Token::RBrace),
                 ";" => return Some(Token::Semicolon),
-                "+" => return Some(Token::Plus),
-                "/" => return Some(Token::Slash),
-                "%" => return Some(Token::Percent),
-                "*" => return Some(Token::Star),
-                "^" => return Some(Token::Caret),
+                "+" => return Some(self.check_next_char("=", Token::PlusEquals, Token::Plus)),
+                "/" => return Some(self.check_next_char("=", Token::SlashEquals, Token::Slash)),
+                "%" => {
+                    return Some(self.check_next_char("=", Token::PercentEquals, Token::Percent));
+                }
+                "*" => return Some(self.check_next_char("=", Token::StarEquals, Token::Star)),
+                "^" => return Some(self.check_next_char("=", Token::CaretEquals, Token::Caret)),
                 c => panic!("Bad token {}", c),
             };
         }

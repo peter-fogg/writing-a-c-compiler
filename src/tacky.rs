@@ -1,5 +1,6 @@
 use crate::parser::{
-    BinaryOperator, BlockItem, Declaration, Expression, Program, Statement, UnaryOperator,
+    BinaryOperator, BlockItem, CompoundOperator, Declaration, Expression, Program, Statement,
+    UnaryOperator,
 };
 
 #[derive(Debug, PartialEq, Clone, Copy)]
@@ -223,7 +224,34 @@ impl TackifyState {
 
                 dst
             }
+            Expression::Compound(compound_op, lhs, rhs) => {
+                let op = Self::convert_compound_op(compound_op);
 
+                let Expression::Var(id) = *lhs.clone() else {
+                    panic!(
+                        "Bad assignment made it through semantic analysis: {:?}",
+                        *lhs
+                    );
+                };
+
+                let src1 = self.tackify_expr(*lhs, instrs);
+                let src2 = self.tackify_expr(*rhs, instrs);
+                let tmp_dst = Val::Var(self.new_temp("c_tmp"));
+
+                instrs.push(Instr::Binary {
+                    binop: op,
+                    src1,
+                    src2,
+                    dst: tmp_dst.clone(),
+                });
+
+                instrs.push(Instr::Copy {
+                    src: tmp_dst,
+                    dst: Val::Var(id.clone()),
+                });
+
+                Val::Var(id)
+            }
             Expression::Var(id) => Val::Var(id),
             Expression::Assign(lhs, expr) => {
                 let result = self.tackify_expr(*expr, instrs);
@@ -277,6 +305,21 @@ impl TackifyState {
             BinaryOperator::GreaterOrEqual => BinaryOp::GreaterThanEquals,
             BinaryOperator::LessOrEqual => BinaryOp::LessThanEquals,
             binop => panic!("Unexpected binary operator {:?}", binop),
+        }
+    }
+
+    fn convert_compound_op(compound_op: CompoundOperator) -> BinaryOp {
+        match compound_op {
+            CompoundOperator::Add => BinaryOp::Add,
+            CompoundOperator::Subtract => BinaryOp::Subtract,
+            CompoundOperator::Multiply => BinaryOp::Multiply,
+            CompoundOperator::Divide => BinaryOp::Divide,
+            CompoundOperator::Remainder => BinaryOp::Remainder,
+            CompoundOperator::BitAnd => BinaryOp::BitAnd,
+            CompoundOperator::BitOr => BinaryOp::BitOr,
+            CompoundOperator::BitXOr => BinaryOp::BitXOr,
+            CompoundOperator::ShiftLeft => BinaryOp::ShiftLeft,
+            CompoundOperator::ShiftRight => BinaryOp::ShiftRight,
         }
     }
 }

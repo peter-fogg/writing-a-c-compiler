@@ -56,6 +56,18 @@ impl ResolveState {
                 Box::new(self.expression(*lhs)),
                 Box::new(self.expression(*rhs)),
             ),
+            Expression::Compound(compound_op, lhs, rhs) => {
+                if let Expression::Var(_) = *lhs {
+                    Expression::Compound(
+                        compound_op,
+                        Box::new(self.expression(*lhs)),
+                        Box::new(self.expression(*rhs)),
+                    )
+                } else {
+                    panic!("Compound operation on non-value {:?}", lhs)
+                }
+            }
+
             Expression::Constant(n) => Expression::Constant(n),
         }
     }

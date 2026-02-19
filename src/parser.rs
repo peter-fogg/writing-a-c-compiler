@@ -31,11 +31,26 @@ pub enum BinaryOperator {
     GreaterOrEqual,
 }
 
+#[derive(Debug, PartialEq, Clone, Copy)]
+pub enum CompoundOperator {
+    Add,
+    Subtract,
+    Multiply,
+    Divide,
+    Remainder,
+    BitAnd,
+    BitOr,
+    BitXOr,
+    ShiftLeft,
+    ShiftRight,
+}
+
 #[derive(Debug, PartialEq, Clone)]
 pub enum Expression {
     Constant(i32),
     Unary(UnaryOperator, Box<Expression>),
     Binary(BinaryOperator, Box<Expression>, Box<Expression>),
+    Compound(CompoundOperator, Box<Expression>, Box<Expression>),
     Var(String),
     Assign(Box<Expression>, Box<Expression>),
 }
@@ -195,7 +210,17 @@ impl<'a> Parser<'a> {
     fn get_prec(t: Token) -> Prec {
         match t {
             Token::Constant(_) => Prec::Expr,
-            Token::Equals => Prec::Assign,
+            Token::Equals
+            | Token::PlusEquals
+            | Token::MinusEquals
+            | Token::StarEquals
+            | Token::SlashEquals
+            | Token::PercentEquals
+            | Token::AmpersandEquals
+            | Token::PipeEquals
+            | Token::CaretEquals
+            | Token::DoubleLAngleEquals
+            | Token::DoubleRAngleEquals => Prec::Assign,
             Token::Plus | Token::Minus => Prec::AddSub,
             Token::Percent | Token::Star | Token::Slash => Prec::MultDiv,
             Token::Pipe => Prec::BitOr,
@@ -218,22 +243,36 @@ impl<'a> Parser<'a> {
             .tokens
             .peek()
             .unwrap_or_else(|| panic!("Ran out of tokens while parsing expression"));
-        while Self::is_binary_op(&next) && Self::get_prec(next) >= prec {
+        while (Self::is_binary_op(&next) || Self::is_compound_op(&next))
+            && Self::get_prec(next) >= prec
+        {
             let next_prec = Self::get_prec(next);
             if next == Token::Equals {
                 self.consume(Token::Equals);
                 let rhs = self.expression(next_prec);
                 lhs = Expression::Assign(Box::new(lhs), Box::new(rhs));
+            } else if Self::is_compound_op(&next) {
+                let compound_op = self.compound_op();
+                let rhs = self.expression(next_prec);
+                lhs = Expression::Compound(compound_op, Box::new(lhs), Box::new(rhs));
             } else {
                 let binop = self.binary_op();
                 let rhs = self.expression(Self::increment_prec(&next_prec));
                 lhs = Expression::Binary(binop, Box::new(lhs), Box::new(rhs));
             }
+
             next = *self
                 .tokens
                 .peek()
                 .unwrap_or_else(|| panic!("Ran out of tokens while parsing expression"));
         }
+        println!(
+            "stopped parsing at {:?}, next_prec {:?}, prec {:?}, lhs {:?}",
+            next,
+            Self::get_prec(next),
+            prec,
+            lhs
+        );
 
         lhs
     }
@@ -254,6 +293,22 @@ impl<'a> Parser<'a> {
             Prec::AddSub => Prec::MultDiv,
             _ => Prec::Top,
         }
+    }
+
+    fn is_compound_op(token: &Token) -> bool {
+        [
+            Token::PlusEquals,
+            Token::MinusEquals,
+            Token::StarEquals,
+            Token::SlashEquals,
+            Token::PercentEquals,
+            Token::AmpersandEquals,
+            Token::PipeEquals,
+            Token::CaretEquals,
+            Token::DoubleLAngleEquals,
+            Token::DoubleRAngleEquals,
+        ]
+        .contains(token)
     }
 
     fn is_binary_op(token: &Token) -> bool {
@@ -301,6 +356,23 @@ impl<'a> Parser<'a> {
                 Expression::Var(id)
             }
             t => panic!("Unexpected token {:?}", t),
+        }
+    }
+
+    fn compound_op(&mut self) -> CompoundOperator {
+        match self.tokens.next() {
+            None => panic!("Ran out of tokens while parsing expression"),
+            Some(Token::PlusEquals) => CompoundOperator::Add,
+            Some(Token::MinusEquals) => CompoundOperator::Subtract,
+            Some(Token::StarEquals) => CompoundOperator::Multiply,
+            Some(Token::SlashEquals) => CompoundOperator::Divide,
+            Some(Token::PercentEquals) => CompoundOperator::Remainder,
+            Some(Token::AmpersandEquals) => CompoundOperator::BitAnd,
+            Some(Token::PipeEquals) => CompoundOperator::BitOr,
+            Some(Token::CaretEquals) => CompoundOperator::BitXOr,
+            Some(Token::DoubleLAngleEquals) => CompoundOperator::ShiftLeft,
+            Some(Token::DoubleRAngleEquals) => CompoundOperator::ShiftRight,
+            Some(t) => panic!("Expected compound operator, got {:?}", t),
         }
     }
 
