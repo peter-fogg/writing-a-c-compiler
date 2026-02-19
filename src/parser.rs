@@ -36,21 +36,38 @@ pub enum Expression {
     Constant(i32),
     Unary(UnaryOperator, Box<Expression>),
     Binary(BinaryOperator, Box<Expression>, Box<Expression>),
+    Var(String),
+    Assign(Box<Expression>, Box<Expression>),
 }
 
 #[derive(Debug, PartialEq, Clone)]
 pub enum Statement {
     Return(Expression),
+    Exp(Expression),
+    Null,
 }
 
 #[derive(Debug, PartialEq, Clone)]
-pub enum Program<'a> {
-    Function(&'a str, Statement),
+pub struct Declaration {
+    pub name: String,
+    pub init: Option<Expression>,
+}
+
+#[derive(Debug, PartialEq, Clone)]
+pub enum BlockItem {
+    S(Statement),
+    D(Declaration),
+}
+
+#[derive(Debug, PartialEq, Clone)]
+pub enum Program {
+    Function(String, Vec<BlockItem>),
 }
 
 #[derive(Debug, PartialEq, PartialOrd, Copy, Clone)]
 enum Prec {
     Bottom,
+    Assign,
     Expr,
     Or,
     And,
@@ -67,8 +84,6 @@ enum Prec {
 
 type TokenStream<'a> = Peekable<Lexer<'a>>;
 
-pub type ParseOutput<'a> = Program<'a>;
-
 pub struct Parser<'a> {
     tokens: TokenStream<'a>,
 }
@@ -78,7 +93,7 @@ impl<'a> Parser<'a> {
         Self { tokens }
     }
 
-    pub fn parse(&mut self) -> ParseOutput<'a> {
+    pub fn parse(&mut self) -> Program {
         self.consume(Token::Int); // only int returns for now
         let fn_name = match self.tokens.next() {
             Some(Token::Id(s)) => s,
@@ -91,11 +106,16 @@ impl<'a> Parser<'a> {
         self.consume(Token::RParen);
         self.consume(Token::LBrace);
 
-        let body = self.statement();
+        let mut block_items = Vec::new();
+
+        while self.tokens.peek() != Some(&Token::RBrace) {
+            let item = self.block_item();
+            block_items.push(item);
+        }
 
         self.consume(Token::RBrace);
 
-        let program = Program::Function(fn_name, body);
+        let program = Program::Function(fn_name.to_string(), block_items);
 
         match self.tokens.peek() {
             None => (),
@@ -105,14 +125,57 @@ impl<'a> Parser<'a> {
         program
     }
 
-    fn statement(&mut self) -> Statement {
-        self.consume(Token::Return);
+    fn declaration(&mut self) -> Declaration {
+        self.consume(Token::Int);
+        let name = match self.tokens.next() {
+            Some(Token::Id(id)) => id.to_string(),
+            t => panic!("Expected identifier, got {:?}", t),
+        };
 
-        let expr = self.expression(Prec::Bottom);
+        let init = match self.tokens.peek() {
+            Some(Token::Equals) => {
+                self.tokens.next();
+                Some(self.expression(Prec::Bottom))
+            }
+            Some(Token::Semicolon) => None,
+            Some(t) => panic!("Expected assignment or ;, got {:?}", t),
+            None => None,
+        };
 
         self.consume(Token::Semicolon);
+        Declaration { name, init }
+    }
 
-        Statement::Return(expr)
+    fn block_item(&mut self) -> BlockItem {
+        match self.tokens.peek() {
+            Some(Token::Int) => BlockItem::D(self.declaration()),
+            Some(_) => BlockItem::S(self.statement()),
+            None => panic!("Unexpected end of input parsing block item"),
+        }
+    }
+
+    fn statement(&mut self) -> Statement {
+        match self.tokens.peek() {
+            Some(Token::Return) => {
+                self.consume(Token::Return);
+
+                let expr = self.expression(Prec::Bottom);
+
+                self.consume(Token::Semicolon);
+
+                Statement::Return(expr)
+            }
+            Some(Token::Semicolon) => {
+                self.consume(Token::Semicolon);
+                Statement::Null
+            }
+            Some(_) => {
+                let expr = Statement::Exp(self.expression(Prec::Bottom));
+                self.consume(Token::Semicolon);
+                expr
+            }
+            None => panic!("Unexpected end of input parsing statement"),
+        }
     }
 
     fn constant(&mut self) -> Expression {
@@ -132,6 +195,7 @@ impl<'a> Parser<'a> {
     fn get_prec(t: Token) -> Prec {
         match t {
             Token::Constant(_) => Prec::Expr,
+            Token::Equals => Prec::Assign,
             Token::Plus | Token::Minus => Prec::AddSub,
             Token::Percent | Token::Star | Token::Slash => Prec::MultDiv,
             Token::Pipe => Prec::BitOr,
@@ -155,10 +219,16 @@ impl<'a> Parser<'a> {
             .peek()
             .unwrap_or_else(|| panic!("Ran out of tokens while parsing expression"));
         while Self::is_binary_op(&next) && Self::get_prec(next) >= prec {
-            let binop = self.binary_op();
             let next_prec = Self::get_prec(next);
-            let rhs = self.expression(Self::increment_prec(&next_prec));
-            lhs = Expression::Binary(binop, Box::new(lhs), Box::new(rhs));
+            if next == Token::Equals {
+                self.consume(Token::Equals);
+                let rhs = self.expression(next_prec);
+                lhs = Expression::Assign(Box::new(lhs), Box::new(rhs));
+            } else {
+                let binop = self.binary_op();
+                let rhs = self.expression(Self::increment_prec(&next_prec));
+                lhs = Expression::Binary(binop, Box::new(lhs), Box::new(rhs));
+            }
             next = *self
                 .tokens
                 .peek()
@@ -170,7 +240,8 @@ impl<'a> Parser<'a> {
 
     fn increment_prec(prec: &Prec) -> Prec {
         match prec {
-            Prec::Bottom => Prec::Expr,
+            Prec::Bottom => Prec::Assign,
+            Prec::Assign => Prec::Expr,
             Prec::Expr => Prec::Or,
             Prec::Or => Prec::And,
             Prec::And => Prec::BitOr,
@@ -205,6 +276,7 @@ impl<'a> Parser<'a> {
             Token::RAngleEquals,
             Token::LAngle,
             Token::LAngleEquals,
+            Token::Equals,
         ]
         .contains(token)
     }
@@ -214,7 +286,7 @@ impl<'a> Parser<'a> {
             Some(Token::Constant(_)) => self.constant(),
             Some(Token::LParen) => {
                 self.tokens.next();
-                let sub_expr = self.expression(Prec::Expr);
+                let sub_expr = self.expression(Prec::Bottom);
                 self.consume(Token::RParen);
                 sub_expr
             }
@@ -222,6 +294,11 @@ impl<'a> Parser<'a> {
                 let un_op = self.unary_op();
                 let inner_expr = self.factor();
                 Expression::Unary(un_op, Box::new(inner_expr))
+            }
+            Some(Token::Id(id)) => {
+                let id = id.to_string();
+                self.tokens.next();
+                Expression::Var(id)
             }
             t => panic!("Unexpected token {:?}", t),
         }

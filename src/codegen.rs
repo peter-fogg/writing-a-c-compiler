@@ -78,9 +78,9 @@ pub enum Instr {
 }
 
 #[derive(Debug, PartialEq, Clone)]
-pub enum Assembly<'a> {
+pub enum Assembly {
     Function {
-        name: &'a str,
+        name: String,
         instructions: Vec<Instr>,
     },
 }
@@ -90,7 +90,7 @@ struct ReplaceState {
     max_offset: u8,
 }
 
-pub fn assemble<'a>(tacky: tacky::Tacky<'a>) -> Assembly<'a> {
+pub fn assemble(tacky: tacky::Tacky) -> Assembly {
     let tacky::Tacky::Function { name, instructions } = tacky;
     let mut assembled = assemble_instructions(instructions);
     let stack_offset = replace_pseudo(&mut assembled);

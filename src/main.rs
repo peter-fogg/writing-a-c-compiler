@@ -1,11 +1,13 @@
 use std::{env, fs, path};
 
 use parser::Parser;
+use semantic_analysis::resolve_vars;
 
 mod codegen;
 mod emit;
 mod lexer;
 mod parser;
+mod semantic_analysis;
 mod tacky;
 
 fn main() {
@@ -47,6 +49,11 @@ fn compile_file(text: String, assembly_path: &path::Path, rest_args: Vec<String>
     }
     let parsed = Parser::new(lexed).parse();
     if rest_args.iter().any(|s| s == "--parse") {
+        println!("{:?}", parsed);
+        std::process::exit(0);
+    }
+    let parsed = resolve_vars(parsed);
+    if rest_args.iter().any(|s| s == "--validate") {
         println!("{:?}", parsed);
         std::process::exit(0);
     }

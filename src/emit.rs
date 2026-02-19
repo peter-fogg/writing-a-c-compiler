@@ -3,10 +3,7 @@ use std::{fs::File, io::Write};
 
 use crate::codegen::{Assembly, BinaryOp, CondCode, Instr, Operand, Register, UnaryOp};
 
-pub fn emit<'a>(
-    Assembly::Function { name, instructions }: Assembly<'a>,
-    mut file: File,
-) -> Result<()> {
+pub fn emit(Assembly::Function { name, instructions }: Assembly, mut file: File) -> Result<()> {
     file.write_all(format!("\t.globl _{}\n", name).as_bytes())?;
     file.write_all(format!("_{}:\n", name).as_bytes())?;
     file.write_all("\tpushq\t%rbp\n".as_bytes())?;

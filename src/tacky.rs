@@ -1,4 +1,6 @@
-use crate::parser::{self, BinaryOperator, UnaryOperator};
+use crate::parser::{
+    BinaryOperator, BlockItem, Declaration, Expression, Program, Statement, UnaryOperator,
+};
 
 #[derive(Debug, PartialEq, Clone, Copy)]
 pub enum UnaryOp {
@@ -66,9 +68,9 @@ pub enum Instr {
 }
 
 #[derive(Debug, PartialEq, Clone)]
-pub enum Tacky<'a> {
+pub enum Tacky {
     Function {
-        name: &'a str,
+        name: String,
         instructions: Vec<Instr>,
     },
 }
@@ -77,13 +79,18 @@ struct TackifyState {
     count: u8,
 }
 
-pub fn emit_tacky<'a>(ast: parser::ParseOutput<'a>) -> Tacky<'a> {
-    let parser::Program::Function(name, statement) = ast;
-    let parser::Statement::Return(expr) = statement;
+pub fn emit_tacky(ast: Program) -> Tacky {
+    let Program::Function(name, block_items) = ast;
     let mut instructions = Vec::new();
+
     let mut tackify_state = TackifyState::new();
-    let result = tackify_state.tackify_expr(expr, &mut instructions);
-    instructions.push(Instr::Return(result));
+    for block_item in block_items {
+        match block_item {
+            BlockItem::D(decl) => tackify_state.tackify_declaration(decl, &mut instructions),
+            BlockItem::S(stmt) => tackify_state.tackify_statement(stmt, &mut instructions),
+        }
+    }
+    instructions.push(Instr::Return(Val::Constant(0)));
     Tacky::Function { name, instructions }
 }
 
@@ -92,10 +99,33 @@ impl TackifyState {
         Self { count: 0 }
     }
 
-    fn tackify_expr(&mut self, expr: parser::Expression, instrs: &mut Vec<Instr>) -> Val {
+    fn tackify_declaration(&mut self, decl: Declaration, instrs: &mut Vec<Instr>) {
+        if let Some(expr) = decl.init {
+            let expr = self.tackify_expr(expr, instrs);
+            instrs.push(Instr::Copy {
+                src: expr,
+                dst: Val::Var(decl.name),
+            });
+        }
+    }
+
+    fn tackify_statement(&mut self, stmt: Statement, instrs: &mut Vec<Instr>) {
+        match stmt {
+            Statement::Null => (),
+            Statement::Return(expr) => {
+                let result = Instr::Return(self.tackify_expr(expr, instrs));
+                instrs.push(result);
+            }
+            Statement::Exp(expr) => {
+                self.tackify_expr(expr, instrs);
+            }
+        }
+    }
+
+    fn tackify_expr(&mut self, expr: Expression, instrs: &mut Vec<Instr>) -> Val {
         match expr {
-            parser::Expression::Constant(n) => Val::Constant(n),
-            parser::Expression::Unary(un_op, inner) => {
+            Expression::Constant(n) => Val::Constant(n),
+            Expression::Unary(un_op, inner) => {
                 let src = self.tackify_expr(*inner, instrs);
                 let dst_name = self.new_temp("tmp");
                 let dst = Val::Var(dst_name);
@@ -108,7 +138,7 @@ impl TackifyState {
                 instrs.push(new_unop);
                 dst
             }
-            parser::Expression::Binary(BinaryOperator::And, lhs, rhs) => {
+            Expression::Binary(BinaryOperator::And, lhs, rhs) => {
                 let end_label = self.new_temp("and_end");
                 let false_label = self.new_temp("and_false");
                 let ret_val = Val::Var(self.new_temp("and_result"));
@@ -142,7 +172,7 @@ impl TackifyState {
 
                 ret_val
             }
-            parser::Expression::Binary(BinaryOperator::Or, lhs, rhs) => {
+            Expression::Binary(BinaryOperator::Or, lhs, rhs) => {
                 let end_label = self.new_temp("or_end");
                 let true_label = self.new_temp("or_true");
                 let ret_val = Val::Var(self.new_temp("or_result"));
@@ -175,7 +205,7 @@ impl TackifyState {
 
                 ret_val
             }
-            parser::Expression::Binary(binop, lhs, rhs) => {
+            Expression::Binary(binop, lhs, rhs) => {
                 let src1 = self.tackify_expr(*lhs, instrs);
                 let src2 = self.tackify_expr(*rhs, instrs);
                 let dst = Val::Var(self.new_temp("tmp"));
@@ -193,6 +223,24 @@ impl TackifyState {
 
                 dst
             }
+
+            Expression::Var(id) => Val::Var(id),
+            Expression::Assign(lhs, expr) => {
+                let result = self.tackify_expr(*expr, instrs);
+
+                let Expression::Var(id) = *lhs else {
+                    panic!(
+                        "Bad assignment made it through semantic analysis: {:?}",
+                        *lhs
+                    )
+                };
+
+                instrs.push(Instr::Copy {
+                    src: result,
+                    dst: Val::Var(id.clone()),
+                });
+                Val::Var(id)
+            }
         }
     }
 
@@ -202,7 +250,7 @@ impl TackifyState {
         format!("{}.{}", var_name, count)
     }
 
-    fn convert_unop(unop: parser::UnaryOperator) -> UnaryOp {
+    fn convert_unop(unop: UnaryOperator) -> UnaryOp {
         match unop {
             UnaryOperator::Complement => UnaryOp::Complement,
             UnaryOperator::Negate => UnaryOp::Negate,
@@ -210,7 +258,7 @@ impl TackifyState {
         }
     }
 
-    fn convert_binop(binop: parser::BinaryOperator) -> BinaryOp {
+    fn convert_binop(binop: BinaryOperator) -> BinaryOp {
         match binop {
             BinaryOperator::Add => BinaryOp::Add,
             BinaryOperator::Subtract => BinaryOp::Subtract,
@@ -228,7 +276,7 @@ impl TackifyState {
             BinaryOperator::Less => BinaryOp::LessThan,
             BinaryOperator::GreaterOrEqual => BinaryOp::GreaterThanEquals,
             BinaryOperator::LessOrEqual => BinaryOp::LessThanEquals,
-            _ => todo!(),
+            binop => panic!("Unexpected binary operator {:?}", binop),
         }
     }
 }

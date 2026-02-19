@@ -61,7 +61,9 @@ impl<'a> Lexer<'a> {
     pub fn identifier(&mut self) -> Token<'a> {
         let start_index = self.position - 1;
 
-        while Self::is_alpha(self.peek().unwrap_or(" ")) {
+        while Self::is_alpha(self.peek().unwrap_or(" "))
+            || Self::is_digit(self.peek().unwrap_or(" "))
+        {
             self.position += 1;
         }
 
