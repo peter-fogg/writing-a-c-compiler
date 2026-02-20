@@ -1,6 +1,6 @@
 use crate::parser::{
-    BinaryOperator, BlockItem, CompoundOperator, Declaration, Expression, Program, Statement,
-    UnaryOperator,
+    BinaryOperator, BlockItem, CompoundOperator, Crement, Declaration, Expression, Fixity, Program,
+    Statement, UnaryOperator,
 };
 
 #[derive(Debug, PartialEq, Clone, Copy)]
@@ -269,6 +269,33 @@ impl TackifyState {
                 });
                 Val::Var(id)
             }
+            Expression::Crement(fixity, crement, expr) => {
+                let op = Self::convert_crement(crement);
+
+                let name = if crement == Crement::Inc {
+                    "inc"
+                } else {
+                    "dec"
+                };
+                let tmp_dst = Val::Var(self.new_temp(name));
+
+                let src = self.tackify_expr(*expr, instrs);
+
+                instrs.extend(vec![
+                    Instr::Copy {
+                        src: src.clone(),
+                        dst: tmp_dst.clone(),
+                    },
+                    Instr::Binary {
+                        binop: op,
+                        src1: tmp_dst.clone(),
+                        src2: Val::Constant(1),
+                        dst: src.clone(),
+                    },
+                ]);
+
+                if fixity == Fixity::Pre { src } else { tmp_dst }
+            }
         }
     }
 
@@ -276,6 +303,13 @@ impl TackifyState {
         let count = self.count;
         self.count += 1;
         format!("{}.{}", var_name, count)
+    }
+
+    fn convert_crement(crement: Crement) -> BinaryOp {
+        match crement {
+            Crement::Dec => BinaryOp::Subtract,
+            Crement::Inc => BinaryOp::Add,
+        }
     }
 
     fn convert_unop(unop: UnaryOperator) -> UnaryOp {

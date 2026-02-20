@@ -45,12 +45,25 @@ pub enum CompoundOperator {
     ShiftRight,
 }
 
+#[derive(Debug, PartialEq, Clone, Copy)]
+pub enum Fixity {
+    Pre,
+    Post,
+}
+
+#[derive(Debug, PartialEq, Clone, Copy)]
+pub enum Crement {
+    Inc,
+    Dec,
+}
+
 #[derive(Debug, PartialEq, Clone)]
 pub enum Expression {
     Constant(i32),
     Unary(UnaryOperator, Box<Expression>),
     Binary(BinaryOperator, Box<Expression>, Box<Expression>),
     Compound(CompoundOperator, Box<Expression>, Box<Expression>),
+    Crement(Fixity, Crement, Box<Expression>),
     Var(String),
     Assign(Box<Expression>, Box<Expression>),
 }
@@ -94,6 +107,8 @@ enum Prec {
     Shift,
     AddSub,
     MultDiv,
+    Unary,
+    Postfix,
     Top,
 }
 
@@ -233,6 +248,7 @@ impl<'a> Parser<'a> {
             }
             Token::DoubleAmpersand => Prec::And,
             Token::DoublePipe => Prec::Or,
+            Token::DoublePlus | Token::DoubleMinus => Prec::Postfix,
             _ => Prec::Bottom,
         }
     }
@@ -266,14 +282,23 @@ impl<'a> Parser<'a> {
                 .peek()
                 .unwrap_or_else(|| panic!("Ran out of tokens while parsing expression"));
         }
-        println!(
-            "stopped parsing at {:?}, next_prec {:?}, prec {:?}, lhs {:?}",
-            next,
-            Self::get_prec(next),
-            prec,
-            lhs
-        );
-
+        while Self::is_postfix_op(&next) {
+            match next {
+                Token::DoublePlus => {
+                    self.tokens.next();
+                    lhs = Expression::Crement(Fixity::Post, Crement::Inc, Box::new(lhs));
+                }
+                Token::DoubleMinus => {
+                    self.tokens.next();
+                    lhs = Expression::Crement(Fixity::Post, Crement::Dec, Box::new(lhs));
+                }
+                _ => (),
+            }
+            next = *self
+                .tokens
+                .peek()
+                .unwrap_or_else(|| panic!("Ran out of tokens while parsing expression"));
+        }
         lhs
     }
 
@@ -291,8 +316,14 @@ impl<'a> Parser<'a> {
             Prec::Comparison => Prec::Shift,
             Prec::Shift => Prec::AddSub,
             Prec::AddSub => Prec::MultDiv,
+            Prec::MultDiv => Prec::Unary,
+            Prec::Unary => Prec::Postfix,
             _ => Prec::Top,
         }
+    }
+
+    fn is_postfix_op(token: &Token) -> bool {
+        [Token::DoublePlus, Token::DoubleMinus].contains(token)
     }
 
     fn is_compound_op(token: &Token) -> bool {
@@ -347,13 +378,22 @@ impl<'a> Parser<'a> {
             }
             Some(Token::Tilde | Token::Minus | Token::Bang) => {
                 let un_op = self.unary_op();
-                let inner_expr = self.factor();
+                let inner_expr = self.expression(Prec::Unary);
                 Expression::Unary(un_op, Box::new(inner_expr))
             }
             Some(Token::Id(id)) => {
                 let id = id.to_string();
                 self.tokens.next();
                 Expression::Var(id)
+            }
+            Some(Token::DoublePlus | Token::DoubleMinus) => {
+                let crement = match self.tokens.next() {
+                    Some(Token::DoublePlus) => Crement::Inc,
+                    Some(Token::DoubleMinus) => Crement::Dec,
+                    _ => unreachable!(),
+                };
+                let inner_expr = self.factor();
+                Expression::Crement(Fixity::Pre, crement, Box::new(inner_expr))
             }
             t => panic!("Unexpected token {:?}", t),
         }

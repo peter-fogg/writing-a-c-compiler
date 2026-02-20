@@ -67,8 +67,14 @@ impl ResolveState {
                     panic!("Compound operation on non-value {:?}", lhs)
                 }
             }
-
             Expression::Constant(n) => Expression::Constant(n),
+            Expression::Crement(fixity, crement, expr) => {
+                if let Expression::Var(_) = *expr {
+                    Expression::Crement(fixity, crement, Box::new(self.expression(*expr)))
+                } else {
+                    panic!("Increment/decrement operation on non-lvalue {:?}", expr);
+                }
+            }
         }
     }
 

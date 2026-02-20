@@ -12,11 +12,12 @@ pub enum Token<'a> {
     Semicolon,
     Tilde,
     Plus,
+    DoublePlus,
     Minus,
+    DoubleMinus,
     Star,
     Slash,
     Percent,
-    DoubleMinus,
     Ampersand,
     DoubleAmpersand,
     Pipe,
@@ -220,7 +221,14 @@ impl<'a> Iterator for Lexer<'a> {
                 "{" => return Some(Token::LBrace),
                 "}" => return Some(Token::RBrace),
                 ";" => return Some(Token::Semicolon),
-                "+" => return Some(self.check_next_char("=", Token::PlusEquals, Token::Plus)),
+                "+" => {
+                    if let Some("+") = self.peek() {
+                        self.next_char();
+                        return Some(Token::DoublePlus);
+                    } else {
+                        return Some(self.check_next_char("=", Token::PlusEquals, Token::Plus));
+                    }
+                }
                 "/" => return Some(self.check_next_char("=", Token::SlashEquals, Token::Slash)),
                 "%" => {
                     return Some(self.check_next_char("=", Token::PercentEquals, Token::Percent));
