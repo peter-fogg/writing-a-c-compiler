@@ -32,6 +32,7 @@ impl ResolveState {
                 let else_stmt = else_stmt.map(|else_stmt| Box::new(self.statement(*else_stmt)));
                 Statement::If(cond, Box::new(if_stmt), else_stmt)
             }
+            _ => todo!(),
         }
     }
 

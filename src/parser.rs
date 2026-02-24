@@ -75,6 +75,8 @@ pub enum Statement {
     Return(Expression),
     Exp(Expression),
     If(Expression, Box<Statement>, Option<Box<Statement>>),
+    Goto(String),
+    Label(String),
     Null,
 }
 
@@ -218,6 +220,24 @@ impl<'a> Parser<'a> {
             Some(Token::Semicolon) => {
                 self.consume(Token::Semicolon);
                 Statement::Null
+            }
+            Some(Token::Goto) => {
+                self.tokens.next();
+                match self.tokens.next() {
+                    Some(Token::Id(id)) => {
+                        self.consume(Token::Semicolon);
+                        Statement::Goto(id.to_string())
+                    }
+                    Some(t) => panic!("Expected identifier after goto, got {:?}", t),
+                    None => panic!("Unexpected end of input parsing goto"),
+                }
+            }
+            Some(Token::Id(id)) => {
+                let id_token = self.tokens.next();
+                match self.tokens.peek() {
+                    Some(Token::Colon) => todo!(),
+                    _ => todo!(),
+                }
             }
             Some(_) => {
                 let expr = Statement::Exp(self.expression(Prec::Bottom));

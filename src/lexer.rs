@@ -47,6 +47,7 @@ pub enum Token<'a> {
     Else,
     Huh,
     Colon,
+    Goto,
 }
 
 #[derive(Debug)]
@@ -90,6 +91,7 @@ impl<'a> Lexer<'a> {
             "void" => Token::Void,
             "if" => Token::If,
             "else" => Token::Else,
+            "goto" => Token::Goto,
             _ => Token::Id(id),
         }
     }

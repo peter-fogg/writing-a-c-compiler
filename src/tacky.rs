@@ -146,6 +146,7 @@ impl TackifyState {
                 self.tackify_statement(*if_stmt, instrs);
                 instrs.push(Instr::Label(end_label));
             }
+            _ => todo!(),
         }
     }
 
