@@ -29,6 +29,7 @@ pub enum BinaryOperator {
     LessOrEqual,
     Greater,
     GreaterOrEqual,
+    Conditional,
 }
 
 #[derive(Debug, PartialEq, Clone, Copy)]
@@ -66,12 +67,14 @@ pub enum Expression {
     Crement(Fixity, Crement, Box<Expression>),
     Var(String),
     Assign(Box<Expression>, Box<Expression>),
+    Conditional(Box<Expression>, Box<Expression>, Box<Expression>),
 }
 
 #[derive(Debug, PartialEq, Clone)]
 pub enum Statement {
     Return(Expression),
     Exp(Expression),
+    If(Expression, Box<Statement>, Option<Box<Statement>>),
     Null,
 }
 
@@ -96,6 +99,7 @@ pub enum Program {
 enum Prec {
     Bottom,
     Assign,
+    Cond,
     Expr,
     Or,
     And,
@@ -186,6 +190,22 @@ impl<'a> Parser<'a> {
 
     fn statement(&mut self) -> Statement {
         match self.tokens.peek() {
+            Some(Token::If) => {
+                self.tokens.next();
+                self.consume(Token::LParen);
+                let condition = self.expression(Prec::Bottom);
+                self.consume(Token::RParen);
+                let if_stmt = self.statement();
+                let else_stmt = match self.tokens.peek() {
+                    Some(Token::Else) => {
+                        self.consume(Token::Else);
+                        let else_stmt = self.statement();
+                        Some(Box::new(else_stmt))
+                    }
+                    _ => None,
+                };
+                Statement::If(condition, Box::new(if_stmt), else_stmt)
+            }
             Some(Token::Return) => {
                 self.consume(Token::Return);
 
@@ -236,6 +256,7 @@ impl<'a> Parser<'a> {
             | Token::CaretEquals
             | Token::DoubleLAngleEquals
             | Token::DoubleRAngleEquals => Prec::Assign,
+            Token::Huh => Prec::Cond,
             Token::Plus | Token::Minus => Prec::AddSub,
             Token::Percent | Token::Star | Token::Slash => Prec::MultDiv,
             Token::Pipe => Prec::BitOr,
@@ -267,6 +288,13 @@ impl<'a> Parser<'a> {
                 self.consume(Token::Equals);
                 let rhs = self.expression(next_prec);
                 lhs = Expression::Assign(Box::new(lhs), Box::new(rhs));
+            } else if next == Token::Huh {
+                self.consume(Token::Huh);
+                let if_expr = self.expression(Prec::Bottom);
+                self.consume(Token::Colon);
+                let else_expr = self.expression(next_prec);
+                lhs =
+                    Expression::Conditional(Box::new(lhs), Box::new(if_expr), Box::new(else_expr));
             } else if Self::is_compound_op(&next) {
                 let compound_op = self.compound_op();
                 let rhs = self.expression(next_prec);
@@ -305,7 +333,8 @@ impl<'a> Parser<'a> {
     fn increment_prec(prec: &Prec) -> Prec {
         match prec {
             Prec::Bottom => Prec::Assign,
-            Prec::Assign => Prec::Expr,
+            Prec::Assign => Prec::Cond,
+            Prec::Cond => Prec::Expr,
             Prec::Expr => Prec::Or,
             Prec::Or => Prec::And,
             Prec::And => Prec::BitOr,
@@ -363,6 +392,7 @@ impl<'a> Parser<'a> {
             Token::LAngle,
             Token::LAngleEquals,
             Token::Equals,
+            Token::Huh,
         ]
         .contains(token)
     }
@@ -437,6 +467,7 @@ impl<'a> Parser<'a> {
             Some(Token::RAngleEquals) => BinaryOperator::GreaterOrEqual,
             Some(Token::LAngle) => BinaryOperator::Less,
             Some(Token::LAngleEquals) => BinaryOperator::LessOrEqual,
+            Some(Token::Huh) => BinaryOperator::Conditional,
             Some(t) => panic!("Expected binary operator, got {:?}", t),
         }
     }

@@ -120,6 +120,32 @@ impl TackifyState {
             Statement::Exp(expr) => {
                 self.tackify_expr(expr, instrs);
             }
+            Statement::If(cond, if_stmt, Some(else_stmt)) => {
+                let cond = self.tackify_expr(cond, instrs);
+                let else_label = self.new_temp("if_else");
+                let end_label = self.new_temp("if_end");
+                instrs.push(Instr::JumpIfZero {
+                    condition: cond,
+                    target: else_label.clone(),
+                });
+                self.tackify_statement(*if_stmt, instrs);
+                instrs.push(Instr::Jump {
+                    target: end_label.clone(),
+                });
+                instrs.push(Instr::Label(else_label));
+                self.tackify_statement(*else_stmt, instrs);
+                instrs.push(Instr::Label(end_label));
+            }
+            Statement::If(cond, if_stmt, None) => {
+                let cond = self.tackify_expr(cond, instrs);
+                let end_label = self.new_temp("if_end");
+                instrs.push(Instr::JumpIfZero {
+                    condition: cond,
+                    target: end_label.clone(),
+                });
+                self.tackify_statement(*if_stmt, instrs);
+                instrs.push(Instr::Label(end_label));
+            }
         }
     }
 
@@ -295,6 +321,36 @@ impl TackifyState {
                 ]);
 
                 if fixity == Fixity::Pre { src } else { tmp_dst }
+            }
+            Expression::Conditional(cond_expr, if_expr, else_expr) => {
+                let cond_expr = self.tackify_expr(*cond_expr, instrs);
+                let end_label = self.new_temp("cond_end");
+                let else_label = self.new_temp("cond_else");
+                let cond_dst = Val::Var(self.new_temp("cond_result"));
+                instrs.push(Instr::JumpIfZero {
+                    condition: cond_expr,
+                    target: else_label.clone(),
+                });
+                let if_expr = self.tackify_expr(*if_expr, instrs);
+                instrs.extend(vec![
+                    Instr::Copy {
+                        src: if_expr,
+                        dst: cond_dst.clone(),
+                    },
+                    Instr::Jump {
+                        target: end_label.clone(),
+                    },
+                    Instr::Label(else_label),
+                ]);
+                let else_expr = self.tackify_expr(*else_expr, instrs);
+                instrs.extend(vec![
+                    Instr::Copy {
+                        src: else_expr,
+                        dst: cond_dst.clone(),
+                    },
+                    Instr::Label(end_label),
+                ]);
+                cond_dst
             }
         }
     }

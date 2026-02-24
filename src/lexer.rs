@@ -43,6 +43,10 @@ pub enum Token<'a> {
     CaretEquals,
     DoubleLAngleEquals,
     DoubleRAngleEquals,
+    If,
+    Else,
+    Huh,
+    Colon,
 }
 
 #[derive(Debug)]
@@ -84,6 +88,8 @@ impl<'a> Lexer<'a> {
             "return" => Token::Return,
             "int" => Token::Int,
             "void" => Token::Void,
+            "if" => Token::If,
+            "else" => Token::Else,
             _ => Token::Id(id),
         }
     }
@@ -235,6 +241,8 @@ impl<'a> Iterator for Lexer<'a> {
                 }
                 "*" => return Some(self.check_next_char("=", Token::StarEquals, Token::Star)),
                 "^" => return Some(self.check_next_char("=", Token::CaretEquals, Token::Caret)),
+                "?" => return Some(Token::Huh),
+                ":" => return Some(Token::Colon),
                 c => panic!("Bad token {}", c),
             };
         }

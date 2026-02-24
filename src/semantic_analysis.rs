@@ -26,6 +26,12 @@ impl ResolveState {
             Statement::Null => Statement::Null,
             Statement::Return(expr) => Statement::Return(self.expression(expr)),
             Statement::Exp(expr) => Statement::Exp(self.expression(expr)),
+            Statement::If(cond, if_stmt, else_stmt) => {
+                let cond = self.expression(cond);
+                let if_stmt = self.statement(*if_stmt);
+                let else_stmt = else_stmt.map(|else_stmt| Box::new(self.statement(*else_stmt)));
+                Statement::If(cond, Box::new(if_stmt), else_stmt)
+            }
         }
     }
 
@@ -74,6 +80,12 @@ impl ResolveState {
                 } else {
                     panic!("Increment/decrement operation on non-lvalue {:?}", expr);
                 }
+            }
+            Expression::Conditional(cond_expr, if_expr, else_expr) => {
+                let cond_expr = self.expression(*cond_expr);
+                let if_expr = self.expression(*if_expr);
+                let else_expr = self.expression(*else_expr);
+                Expression::Conditional(Box::new(cond_expr), Box::new(if_expr), Box::new(else_expr))
             }
         }
     }
