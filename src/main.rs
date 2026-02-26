@@ -42,7 +42,7 @@ fn main() {
 }
 
 fn compile_file(text: String, assembly_path: &path::Path, rest_args: Vec<String>) {
-    let lexed = lexer::Lexer::new(&text).peekable();
+    let lexed = lexer::Lexer::new(&text);
     if rest_args.iter().any(|s| s == "--lex") {
         println!("{:?}", lexed.collect::<Vec<_>>());
         std::process::exit(0);

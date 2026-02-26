@@ -1,5 +1,3 @@
-use std::iter::Peekable;
-
 use crate::lexer::{Lexer, Token};
 
 #[derive(Debug, PartialEq, Clone, Copy)]
@@ -118,25 +116,47 @@ enum Prec {
     Top,
 }
 
-type TokenStream<'a> = Peekable<Lexer<'a>>;
-
 pub struct Parser<'a> {
-    tokens: TokenStream<'a>,
+    tokens: Lexer<'a>,
+    current: Option<Token<'a>>,
+    next: Option<Token<'a>>,
 }
 
 impl<'a> Parser<'a> {
-    pub fn new(tokens: TokenStream<'a>) -> Self {
-        Self { tokens }
+    pub fn new(mut tokens: Lexer<'a>) -> Self {
+        let current = tokens.next();
+        let next = tokens.next();
+        Self {
+            tokens,
+            current,
+            next,
+        }
+    }
+
+    pub fn advance(&mut self) -> Option<Token<'a>> {
+        self.current = self.next;
+        self.next = self.tokens.next();
+        self.current
+    }
+
+    fn consume(&mut self, token: Token) {
+        match self.current {
+            Some(t) if t == token => {
+                self.advance();
+            }
+            t => panic!("Expected {:?}, got {:?}", token, t),
+        }
     }
 
     pub fn parse(&mut self) -> Program {
         self.consume(Token::Int); // only int returns for now
-        let fn_name = match self.tokens.next() {
+        let fn_name = match self.current {
             Some(Token::Id(s)) => s,
             _ => {
                 panic!("Bad parse");
             }
         };
+        self.advance();
         self.consume(Token::LParen);
         self.consume(Token::Void);
         self.consume(Token::RParen);
@@ -144,7 +164,7 @@ impl<'a> Parser<'a> {
 
         let mut block_items = Vec::new();
 
-        while self.tokens.peek() != Some(&Token::RBrace) {
+        while self.current != Some(Token::RBrace) {
             let item = self.block_item();
             block_items.push(item);
         }
@@ -153,7 +173,7 @@ impl<'a> Parser<'a> {
 
         let program = Program::Function(fn_name.to_string(), block_items);
 
-        match self.tokens.peek() {
+        match self.current {
             None => (),
             Some(t) => panic!("Extra junk at end: {:?}", t),
         }
@@ -163,14 +183,17 @@ impl<'a> Parser<'a> {
 
     fn declaration(&mut self) -> Declaration {
         self.consume(Token::Int);
-        let name = match self.tokens.next() {
-            Some(Token::Id(id)) => id.to_string(),
+        let name = match self.current {
+            Some(Token::Id(id)) => {
+                self.advance();
+                id.to_string()
+            }
             t => panic!("Expected identifier, got {:?}", t),
         };
 
-        let init = match self.tokens.peek() {
+        let init = match self.current {
             Some(Token::Equals) => {
-                self.tokens.next();
+                self.consume(Token::Equals);
                 Some(self.expression(Prec::Bottom))
             }
             Some(Token::Semicolon) => None,
@@ -183,7 +206,7 @@ impl<'a> Parser<'a> {
     }
 
     fn block_item(&mut self) -> BlockItem {
-        match self.tokens.peek() {
+        match self.current {
             Some(Token::Int) => BlockItem::D(self.declaration()),
             Some(_) => BlockItem::S(self.statement()),
             None => panic!("Unexpected end of input parsing block item"),
@@ -191,14 +214,14 @@ impl<'a> Parser<'a> {
     }
 
     fn statement(&mut self) -> Statement {
-        match self.tokens.peek() {
+        match self.current {
             Some(Token::If) => {
-                self.tokens.next();
+                self.consume(Token::If);
                 self.consume(Token::LParen);
                 let condition = self.expression(Prec::Bottom);
                 self.consume(Token::RParen);
                 let if_stmt = self.statement();
-                let else_stmt = match self.tokens.peek() {
+                let else_stmt = match self.current {
                     Some(Token::Else) => {
                         self.consume(Token::Else);
                         let else_stmt = self.statement();
@@ -210,7 +233,6 @@ impl<'a> Parser<'a> {
             }
             Some(Token::Return) => {
                 self.consume(Token::Return);
-
                 let expr = self.expression(Prec::Bottom);
 
                 self.consume(Token::Semicolon);
@@ -222,21 +244,14 @@ impl<'a> Parser<'a> {
                 Statement::Null
             }
             Some(Token::Goto) => {
-                self.tokens.next();
-                match self.tokens.next() {
+                self.consume(Token::Goto);
+                match self.advance() {
                     Some(Token::Id(id)) => {
                         self.consume(Token::Semicolon);
                         Statement::Goto(id.to_string())
                     }
                     Some(t) => panic!("Expected identifier after goto, got {:?}", t),
                     None => panic!("Unexpected end of input parsing goto"),
-                }
-            }
-            Some(Token::Id(id)) => {
-                let id_token = self.tokens.next();
-                match self.tokens.peek() {
-                    Some(Token::Colon) => todo!(),
-                    _ => todo!(),
                 }
             }
             Some(_) => {
@@ -249,7 +264,7 @@ impl<'a> Parser<'a> {
     }
 
     fn constant(&mut self) -> Expression {
-        let n_str = match self.tokens.next() {
+        let n_str = match self.current {
             Some(Token::Constant(n_str)) => n_str,
             err => panic!("bad numeric parse: {:?}", err),
         };
@@ -258,7 +273,7 @@ impl<'a> Parser<'a> {
             Ok(n) => n,
             err => panic!("bad numeric parse: {:?}", err),
         };
-
+        self.advance();
         Expression::Constant(n)
     }
 
@@ -296,10 +311,10 @@ impl<'a> Parser<'a> {
 
     fn expression(&mut self, prec: Prec) -> Expression {
         let mut lhs = self.factor();
-        let mut next = *self
-            .tokens
-            .peek()
+        let mut next = self
+            .current
             .unwrap_or_else(|| panic!("Ran out of tokens while parsing expression"));
+
         while (Self::is_binary_op(&next) || Self::is_compound_op(&next))
             && Self::get_prec(next) >= prec
         {
@@ -324,27 +339,24 @@ impl<'a> Parser<'a> {
                 let rhs = self.expression(Self::increment_prec(&next_prec));
                 lhs = Expression::Binary(binop, Box::new(lhs), Box::new(rhs));
             }
-
-            next = *self
-                .tokens
-                .peek()
+            next = self
+                .current
                 .unwrap_or_else(|| panic!("Ran out of tokens while parsing expression"));
         }
         while Self::is_postfix_op(&next) {
             match next {
                 Token::DoublePlus => {
-                    self.tokens.next();
+                    self.consume(Token::DoublePlus);
                     lhs = Expression::Crement(Fixity::Post, Crement::Inc, Box::new(lhs));
                 }
                 Token::DoubleMinus => {
-                    self.tokens.next();
+                    self.consume(Token::DoubleMinus);
                     lhs = Expression::Crement(Fixity::Post, Crement::Dec, Box::new(lhs));
                 }
                 _ => (),
             }
-            next = *self
-                .tokens
-                .peek()
+            next = self
+                .current
                 .unwrap_or_else(|| panic!("Ran out of tokens while parsing expression"));
         }
         lhs
@@ -418,10 +430,10 @@ impl<'a> Parser<'a> {
     }
 
     fn factor(&mut self) -> Expression {
-        match self.tokens.peek() {
+        match self.current {
             Some(Token::Constant(_)) => self.constant(),
             Some(Token::LParen) => {
-                self.tokens.next();
+                self.consume(Token::LParen);
                 let sub_expr = self.expression(Prec::Bottom);
                 self.consume(Token::RParen);
                 sub_expr
@@ -433,15 +445,16 @@ impl<'a> Parser<'a> {
             }
             Some(Token::Id(id)) => {
                 let id = id.to_string();
-                self.tokens.next();
+                self.advance();
                 Expression::Var(id)
             }
             Some(Token::DoublePlus | Token::DoubleMinus) => {
-                let crement = match self.tokens.next() {
+                let crement = match self.current {
                     Some(Token::DoublePlus) => Crement::Inc,
                     Some(Token::DoubleMinus) => Crement::Dec,
                     _ => unreachable!(),
                 };
+                self.advance();
                 let inner_expr = self.factor();
                 Expression::Crement(Fixity::Pre, crement, Box::new(inner_expr))
             }
@@ -450,7 +463,7 @@ impl<'a> Parser<'a> {
     }
 
     fn compound_op(&mut self) -> CompoundOperator {
-        match self.tokens.next() {
+        let compound = match self.current {
             None => panic!("Ran out of tokens while parsing expression"),
             Some(Token::PlusEquals) => CompoundOperator::Add,
             Some(Token::MinusEquals) => CompoundOperator::Subtract,
@@ -463,11 +476,13 @@ impl<'a> Parser<'a> {
             Some(Token::DoubleLAngleEquals) => CompoundOperator::ShiftLeft,
             Some(Token::DoubleRAngleEquals) => CompoundOperator::ShiftRight,
             Some(t) => panic!("Expected compound operator, got {:?}", t),
-        }
+        };
+        self.advance();
+        compound
     }
 
     fn binary_op(&mut self) -> BinaryOperator {
-        match self.tokens.next() {
+        let binop = match self.current {
             None => panic!("Ran out of tokens while parsing expression"),
             Some(Token::Plus) => BinaryOperator::Add,
             Some(Token::Minus) => BinaryOperator::Subtract,
@@ -489,25 +504,19 @@ impl<'a> Parser<'a> {
             Some(Token::LAngleEquals) => BinaryOperator::LessOrEqual,
             Some(Token::Huh) => BinaryOperator::Conditional,
             Some(t) => panic!("Expected binary operator, got {:?}", t),
-        }
+        };
+        self.advance();
+        binop
     }
 
     fn unary_op(&mut self) -> UnaryOperator {
-        match self.tokens.next() {
+        let unop = match self.current {
             Some(Token::Tilde) => UnaryOperator::Complement,
             Some(Token::Minus) => UnaryOperator::Negate,
             Some(Token::Bang) => UnaryOperator::Not,
             _ => panic!("unreachable"),
-        }
-    }
-
-    fn consume(&mut self, token: Token) {
-        let next_token = self.tokens.peek();
-        match next_token {
-            Some(t) if *t == token => {
-                self.tokens.next();
-            }
-            t => panic!("Expected {:?}, got {:?}", token, t),
-        }
+        };
+        self.advance();
+        unop
     }
 }
