@@ -146,7 +146,13 @@ impl TackifyState {
                 self.tackify_statement(*if_stmt, instrs);
                 instrs.push(Instr::Label(end_label));
             }
-            _ => todo!(),
+            Statement::Label(id, stmt) => {
+                instrs.push(Instr::Label(id));
+                self.tackify_statement(*stmt, instrs);
+            }
+            Statement::Goto(id) => {
+                instrs.push(Instr::Jump { target: id });
+            }
         }
     }
 

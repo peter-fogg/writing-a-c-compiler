@@ -1,7 +1,7 @@
 use std::{env, fs, path};
 
 use parser::Parser;
-use semantic_analysis::resolve_vars;
+use semantic_analysis::{check_labels, resolve_vars};
 
 mod codegen;
 mod emit;
@@ -53,6 +53,7 @@ fn compile_file(text: String, assembly_path: &path::Path, rest_args: Vec<String>
         std::process::exit(0);
     }
     let parsed = resolve_vars(parsed);
+    check_labels(&parsed);
     if rest_args.iter().any(|s| s == "--validate") {
         println!("{:?}", parsed);
         std::process::exit(0);

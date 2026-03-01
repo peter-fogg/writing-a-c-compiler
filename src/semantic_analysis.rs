@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::parser::{BlockItem, Declaration, Expression, Program, Statement};
 
@@ -32,7 +32,11 @@ impl ResolveState {
                 let else_stmt = else_stmt.map(|else_stmt| Box::new(self.statement(*else_stmt)));
                 Statement::If(cond, Box::new(if_stmt), else_stmt)
             }
-            _ => todo!(),
+            Statement::Label(id, stmt) => {
+                let stmt = self.statement(*stmt);
+                Statement::Label(id, Box::new(stmt))
+            }
+            Statement::Goto(id) => Statement::Goto(id),
         }
     }
 
@@ -97,6 +101,7 @@ impl ResolveState {
         format!("{}.resolved.{}", var_name, count)
     }
 }
+
 pub fn resolve_vars(Program::Function(name, block_items): Program) -> Program {
     let mut resolve_state = ResolveState {
         env: HashMap::new(),
@@ -113,4 +118,41 @@ pub fn resolve_vars(Program::Function(name, block_items): Program) -> Program {
     }
 
     Program::Function(name, resolved_items)
+}
+
+pub fn check_labels(Program::Function(name, block_items): &Program) {
+    let mut label_ids = HashSet::new();
+    for block_item in block_items {
+        if let BlockItem::S(stmt) = block_item {
+            check_label(stmt, &mut label_ids);
+        }
+    }
+
+    for block_item in block_items {
+        if let BlockItem::S(Statement::Goto(id)) = block_item
+            && !label_ids.contains(id)
+        {
+            println!("{:?}", label_ids);
+            panic!("Goto to unknown label {:?} in function {:?}", id, name)
+        }
+    }
+}
+
+fn check_label(label: &Statement, label_ids: &mut HashSet<String>) {
+    match label {
+        Statement::Label(id, stmt) => {
+            if label_ids.contains(id) {
+                panic!("Duplicate label {:?}", id)
+            }
+            label_ids.insert(id.to_string());
+            check_label(stmt, label_ids);
+        }
+        Statement::If(_cond, if_stmt, else_stmt) => {
+            check_label(if_stmt, label_ids);
+            if let Some(stmt) = else_stmt {
+                check_label(stmt, label_ids)
+            }
+        }
+        _ => (),
+    }
 }

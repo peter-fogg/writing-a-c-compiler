@@ -74,7 +74,7 @@ pub enum Statement {
     Exp(Expression),
     If(Expression, Box<Statement>, Option<Box<Statement>>),
     Goto(String),
-    Label(String),
+    Label(String, Box<Statement>),
     Null,
 }
 
@@ -166,14 +166,7 @@ impl<'a> Parser<'a> {
 
         while self.current != Some(Token::RBrace) {
             let item = self.block_item();
-            match item {
-                BlockItem::S(Statement::Label(_)) => {
-                    let next_stmt = self.statement();
-                    block_items.push(item);
-                    block_items.push(BlockItem::S(next_stmt));
-                }
-                _ => block_items.push(item),
-            };
+            block_items.push(item);
         }
 
         self.consume(Token::RBrace);
@@ -253,7 +246,8 @@ impl<'a> Parser<'a> {
             Some(Token::Id(id)) if self.next == Some(Token::Colon) => {
                 self.advance();
                 self.consume(Token::Colon);
-                Statement::Label(id.to_string())
+                let stmt = self.statement();
+                Statement::Label(id.to_string(), Box::new(stmt))
             }
             Some(Token::Goto) => {
                 self.consume(Token::Goto);
