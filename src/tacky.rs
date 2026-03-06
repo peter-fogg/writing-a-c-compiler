@@ -85,12 +85,7 @@ pub fn emit_tacky(ast: Program) -> Tacky {
     let mut instructions = Vec::new();
 
     let mut tackify_state = TackifyState::new();
-    for block_item in block_items {
-        match block_item {
-            BlockItem::D(decl) => tackify_state.tackify_declaration(decl, &mut instructions),
-            BlockItem::S(stmt) => tackify_state.tackify_statement(stmt, &mut instructions),
-        }
-    }
+    tackify_state.tackify_block(block_items, &mut instructions);
     instructions.push(Instr::Return(Val::Constant(0)));
     Tacky::Function { name, instructions }
 }
@@ -98,6 +93,15 @@ pub fn emit_tacky(ast: Program) -> Tacky {
 impl TackifyState {
     pub fn new() -> Self {
         Self { count: 0 }
+    }
+
+    fn tackify_block(&mut self, block_items: Vec<BlockItem>, instrs: &mut Vec<Instr>) {
+        for block_item in block_items {
+            match block_item {
+                BlockItem::D(decl) => self.tackify_declaration(decl, instrs),
+                BlockItem::S(stmt) => self.tackify_statement(stmt, instrs),
+            }
+        }
     }
 
     fn tackify_declaration(&mut self, decl: Declaration, instrs: &mut Vec<Instr>) {
@@ -153,6 +157,7 @@ impl TackifyState {
             Statement::Goto(id) => {
                 instrs.push(Instr::Jump { target: id });
             }
+            Statement::Compound(block_items) => self.tackify_block(block_items, instrs),
         }
     }
 

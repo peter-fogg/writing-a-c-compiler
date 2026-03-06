@@ -3,17 +3,28 @@ use std::collections::{HashMap, HashSet};
 use crate::parser::{BlockItem, Declaration, Expression, Program, Statement};
 
 struct ResolveState {
-    env: HashMap<String, String>,
+    env: Vec<HashMap<String, String>>,
     count: u8,
 }
 
 impl ResolveState {
+    pub fn block(&mut self, block_items: Vec<BlockItem>) -> Vec<BlockItem> {
+        let mut resolved_items = Vec::new();
+        for block_item in block_items {
+            match block_item {
+                BlockItem::S(stmt) => resolved_items.push(BlockItem::S(self.statement(stmt))),
+                BlockItem::D(decl) => resolved_items.push(BlockItem::D(self.declaration(decl))),
+            }
+        }
+        resolved_items
+    }
+
     pub fn declaration(&mut self, Declaration { name, init }: Declaration) -> Declaration {
-        if self.env.contains_key(&name) {
+        if self.env.last().unwrap().contains_key(&name) {
             panic!("Duplicate variable name {}", name);
         }
         let new_name = self.new_temp(name.clone());
-        self.env.insert(name, new_name.clone());
+        self.put_env(name, new_name.clone());
         let init = init.map(|exp| self.expression(exp));
         Declaration {
             name: new_name,
@@ -37,6 +48,12 @@ impl ResolveState {
                 Statement::Label(id, Box::new(stmt))
             }
             Statement::Goto(id) => Statement::Goto(id),
+            Statement::Compound(block_items) => {
+                self.env.push(HashMap::new());
+                let block_items = self.block(block_items);
+                self.env.pop();
+                Statement::Compound(block_items)
+            }
         }
     }
 
@@ -53,8 +70,8 @@ impl ResolveState {
                 }
             }
             Expression::Var(id) => {
-                if self.env.contains_key(&id) {
-                    Expression::Var(self.env.get(&id).unwrap().to_string())
+                if let Some(var) = self.get_env(&id) {
+                    Expression::Var(var)
                 } else {
                     panic!("Undeclared variable {:?}", id);
                 }
@@ -100,23 +117,27 @@ impl ResolveState {
         self.count += 1;
         format!("{}.resolved.{}", var_name, count)
     }
+
+    fn get_env(&self, var_name: &String) -> Option<String> {
+        for map in self.env.iter().rev() {
+            if map.contains_key(var_name) {
+                return Some(map.get(var_name).unwrap().to_string());
+            }
+        }
+        None
+    }
+
+    fn put_env(&mut self, var_name: String, resolved: String) {
+        self.env.last_mut().unwrap().insert(var_name, resolved);
+    }
 }
 
 pub fn resolve_vars(Program::Function(name, block_items): Program) -> Program {
     let mut resolve_state = ResolveState {
-        env: HashMap::new(),
+        env: vec![HashMap::new()],
         count: 0,
     };
-    let mut resolved_items = Vec::new();
-    for block_item in block_items {
-        match block_item {
-            BlockItem::S(stmt) => resolved_items.push(BlockItem::S(resolve_state.statement(stmt))),
-            BlockItem::D(decl) => {
-                resolved_items.push(BlockItem::D(resolve_state.declaration(decl)))
-            }
-        }
-    }
-
+    let resolved_items = resolve_state.block(block_items);
     Program::Function(name, resolved_items)
 }
 

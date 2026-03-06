@@ -75,6 +75,7 @@ pub enum Statement {
     If(Expression, Box<Statement>, Option<Box<Statement>>),
     Goto(String),
     Label(String, Box<Statement>),
+    Compound(Vec<BlockItem>),
     Null,
 }
 
@@ -160,6 +161,20 @@ impl<'a> Parser<'a> {
         self.consume(Token::LParen);
         self.consume(Token::Void);
         self.consume(Token::RParen);
+
+        let block_items = self.block();
+
+        let program = Program::Function(fn_name.to_string(), block_items);
+
+        match self.current {
+            None => (),
+            Some(t) => panic!("Extra junk at end: {:?}", t),
+        }
+
+        program
+    }
+
+    fn block(&mut self) -> Vec<BlockItem> {
         self.consume(Token::LBrace);
 
         let mut block_items = Vec::new();
@@ -170,15 +185,7 @@ impl<'a> Parser<'a> {
         }
 
         self.consume(Token::RBrace);
-
-        let program = Program::Function(fn_name.to_string(), block_items);
-
-        match self.current {
-            None => (),
-            Some(t) => panic!("Extra junk at end: {:?}", t),
-        }
-
-        program
+        block_items
     }
 
     fn declaration(&mut self) -> Declaration {
@@ -261,6 +268,7 @@ impl<'a> Parser<'a> {
                     None => panic!("Unexpected end of input parsing goto"),
                 }
             }
+            Some(Token::LBrace) => Statement::Compound(self.block()),
             Some(_) => {
                 let expr = Statement::Exp(self.expression(Prec::Bottom));
                 self.consume(Token::Semicolon);
