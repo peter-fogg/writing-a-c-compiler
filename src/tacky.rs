@@ -1,6 +1,6 @@
 use crate::parser::{
-    BinaryOperator, BlockItem, CompoundOperator, Crement, Declaration, Expression, Fixity, Program,
-    Statement, UnaryOperator,
+    BinaryOperator, BlockItem, CompoundOperator, Crement, Declaration, Expression, Fixity, ForInit,
+    Program, Statement, UnaryOperator,
 };
 
 #[derive(Debug, PartialEq, Clone, Copy)]
@@ -158,6 +158,66 @@ impl TackifyState {
                 instrs.push(Instr::Jump { target: id });
             }
             Statement::Compound(block_items) => self.tackify_block(block_items, instrs),
+            Statement::Break(label) => instrs.push(Instr::Jump {
+                target: "break".to_owned() + &label,
+            }),
+            Statement::Continue(label) => instrs.push(Instr::Jump {
+                target: "continue".to_owned() + &label,
+            }),
+            Statement::DoWhile(label, body, cond) => {
+                instrs.push(Instr::Label(label.clone()));
+                self.tackify_statement(*body, instrs);
+                instrs.push(Instr::Label("continue".to_owned() + &label));
+                let cond = self.tackify_expr(cond, instrs);
+                instrs.push(Instr::JumpIfNotZero {
+                    condition: cond,
+                    target: label.clone(),
+                });
+                instrs.push(Instr::Label("break".to_owned() + &label));
+            }
+            Statement::While(label, cond, body) => {
+                instrs.push(Instr::Label("continue".to_owned() + &label));
+                let cond = self.tackify_expr(cond, instrs);
+                instrs.push(Instr::JumpIfZero {
+                    condition: cond,
+                    target: "break".to_owned() + &label,
+                });
+                self.tackify_statement(*body, instrs);
+                instrs.push(Instr::Jump {
+                    target: "continue".to_owned() + &label,
+                });
+                instrs.push(Instr::Label("break".to_owned() + &label));
+            }
+            Statement::For(label, init, cond, post, body) => {
+                match init {
+                    ForInit::Decl(decl) => {
+                        self.tackify_declaration(decl, instrs);
+                    }
+                    ForInit::Exp(expr) => {
+                        self.tackify_expr(expr, instrs);
+                    }
+                    ForInit::Null => (),
+                }
+                instrs.push(Instr::Label(label.clone()));
+                if let Some(expr) = cond {
+                    let result = self.tackify_expr(expr, instrs);
+                    instrs.push(Instr::JumpIfZero {
+                        condition: result,
+                        target: "break".to_owned() + &label,
+                    });
+                }
+                self.tackify_statement(*body, instrs);
+                instrs.push(Instr::Label("continue".to_owned() + &label));
+                if let Some(expr) = post {
+                    self.tackify_expr(expr, instrs);
+                }
+                instrs.extend(vec![
+                    Instr::Jump {
+                        target: label.clone(),
+                    },
+                    Instr::Label("break".to_owned() + &label),
+                ])
+            }
         }
     }
 

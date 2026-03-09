@@ -48,6 +48,11 @@ pub enum Token<'a> {
     Huh,
     Colon,
     Goto,
+    While,
+    Do,
+    For,
+    Break,
+    Continue,
 }
 
 #[derive(Debug)]
@@ -92,6 +97,11 @@ impl<'a> Lexer<'a> {
             "if" => Token::If,
             "else" => Token::Else,
             "goto" => Token::Goto,
+            "do" => Token::Do,
+            "while" => Token::While,
+            "for" => Token::For,
+            "break" => Token::Break,
+            "continue" => Token::Continue,
             _ => Token::Id(id),
         }
     }

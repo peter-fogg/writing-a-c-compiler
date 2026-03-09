@@ -76,6 +76,24 @@ pub enum Statement {
     Goto(String),
     Label(String, Box<Statement>),
     Compound(Vec<BlockItem>),
+    Break(String),
+    Continue(String),
+    While(String, Expression, Box<Statement>),
+    For(
+        String,
+        ForInit,
+        Option<Expression>,
+        Option<Expression>,
+        Box<Statement>,
+    ),
+    DoWhile(String, Box<Statement>, Expression),
+    Null,
+}
+
+#[derive(Debug, PartialEq, Clone)]
+pub enum ForInit {
+    Decl(Declaration),
+    Exp(Expression),
     Null,
 }
 
@@ -122,6 +140,8 @@ pub struct Parser<'a> {
     current: Option<Token<'a>>,
     next: Option<Token<'a>>,
 }
+
+const UNLABELLED: &str = "unlabelled";
 
 impl<'a> Parser<'a> {
     pub fn new(mut tokens: Lexer<'a>) -> Self {
@@ -269,6 +289,71 @@ impl<'a> Parser<'a> {
                 }
             }
             Some(Token::LBrace) => Statement::Compound(self.block()),
+            Some(Token::Break) => {
+                self.advance();
+                let stmt = Statement::Break(UNLABELLED.to_string());
+                self.consume(Token::Semicolon);
+                stmt
+            }
+            Some(Token::Continue) => {
+                self.advance();
+                let stmt = Statement::Continue(UNLABELLED.to_string());
+                self.consume(Token::Semicolon);
+                stmt
+            }
+            Some(Token::While) => {
+                self.consume(Token::While);
+                self.consume(Token::LParen);
+                let cond = self.expression(Prec::Bottom);
+                self.consume(Token::RParen);
+                let body = self.statement();
+                Statement::While(UNLABELLED.to_string(), cond, Box::new(body))
+            }
+            Some(Token::Do) => {
+                self.consume(Token::Do);
+                let body = self.statement();
+                self.consume(Token::While);
+                self.consume(Token::LParen);
+                let cond = self.expression(Prec::Bottom);
+                self.consume(Token::RParen);
+                self.consume(Token::Semicolon);
+                Statement::DoWhile(UNLABELLED.to_string(), Box::new(body), cond)
+            }
+            Some(Token::For) => {
+                self.consume(Token::For);
+                self.consume(Token::LParen);
+                let init = match self.current {
+                    Some(Token::Int) => ForInit::Decl(self.declaration()),
+                    Some(Token::Semicolon) => {
+                        self.consume(Token::Semicolon);
+                        ForInit::Null
+                    }
+                    _ => {
+                        let expr = ForInit::Exp(self.expression(Prec::Bottom));
+                        self.consume(Token::Semicolon);
+                        expr
+                    }
+                };
+                let cond = if self.current != Some(Token::Semicolon) {
+                    let expr = Some(self.expression(Prec::Bottom));
+                    self.consume(Token::Semicolon);
+                    expr
+                } else {
+                    self.consume(Token::Semicolon);
+                    None
+                };
+                let post = if self.current != Some(Token::RParen) {
+                    let expr = Some(self.expression(Prec::Bottom));
+                    self.consume(Token::RParen);
+                    expr
+                } else {
+                    self.consume(Token::RParen);
+                    None
+                };
+                let body = self.statement();
+
+                Statement::For(UNLABELLED.to_string(), init, cond, post, Box::new(body))
+            }
             Some(_) => {
                 let expr = Statement::Exp(self.expression(Prec::Bottom));
                 self.consume(Token::Semicolon);

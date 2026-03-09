@@ -1,7 +1,7 @@
 use std::{env, fs, path};
 
 use parser::Parser;
-use semantic_analysis::{check_labels, resolve_vars};
+use semantic_analysis::analyze;
 
 mod codegen;
 mod emit;
@@ -52,13 +52,12 @@ fn compile_file(text: String, assembly_path: &path::Path, rest_args: Vec<String>
         println!("{:?}", parsed);
         std::process::exit(0);
     }
-    let parsed = resolve_vars(parsed);
-    check_labels(&parsed);
+    let analyzed = analyze(parsed);
     if rest_args.iter().any(|s| s == "--validate") {
-        println!("{:?}", parsed);
+        println!("{:?}", analyzed);
         std::process::exit(0);
     }
-    let tackified = tacky::emit_tacky(parsed);
+    let tackified = tacky::emit_tacky(analyzed);
     if rest_args.iter().any(|s| s == "--tackify") {
         println!("{:?}", tackified);
         std::process::exit(0);

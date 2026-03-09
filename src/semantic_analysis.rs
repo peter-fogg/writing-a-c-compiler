@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 
-use crate::parser::{BlockItem, Declaration, Expression, Program, Statement};
+use crate::parser::{BlockItem, Declaration, Expression, ForInit, Program, Statement};
 
 struct ResolveState {
     env: Vec<HashMap<String, String>>,
@@ -53,6 +53,31 @@ impl ResolveState {
                 let block_items = self.block(block_items);
                 self.env.pop();
                 Statement::Compound(block_items)
+            }
+            Statement::Break(id) => Statement::Break(id),
+            Statement::Continue(id) => Statement::Continue(id),
+            Statement::DoWhile(label, body, cond) => Statement::DoWhile(
+                label,
+                Box::new(self.statement(*body)),
+                self.expression(cond),
+            ),
+            Statement::While(label, cond, body) => Statement::While(
+                label,
+                self.expression(cond),
+                Box::new(self.statement(*body)),
+            ),
+            Statement::For(label, init, cond, post, body) => {
+                self.env.push(HashMap::new());
+                let init = match init {
+                    ForInit::Decl(decl) => ForInit::Decl(self.declaration(decl)),
+                    ForInit::Exp(expr) => ForInit::Exp(self.expression(expr)),
+                    ForInit::Null => ForInit::Null,
+                };
+                let cond = cond.map(|cond| self.expression(cond));
+                let post = post.map(|post| self.expression(post));
+                let body = self.statement(*body);
+                self.env.pop();
+                Statement::For(label, init, cond, post, Box::new(body))
             }
         }
     }
@@ -132,7 +157,13 @@ impl ResolveState {
     }
 }
 
-pub fn resolve_vars(Program::Function(name, block_items): Program) -> Program {
+pub fn analyze(program: Program) -> Program {
+    let program = resolve_vars(program);
+    check_labels(&program);
+    label_loops(program)
+}
+
+fn resolve_vars(Program::Function(name, block_items): Program) -> Program {
     let mut resolve_state = ResolveState {
         env: vec![HashMap::new()],
         count: 0,
@@ -141,7 +172,7 @@ pub fn resolve_vars(Program::Function(name, block_items): Program) -> Program {
     Program::Function(name, resolved_items)
 }
 
-pub fn check_labels(Program::Function(name, block_items): &Program) {
+fn check_labels(Program::Function(name, block_items): &Program) {
     let mut label_ids = HashSet::new();
     for block_item in block_items {
         if let BlockItem::S(stmt) = block_item {
@@ -175,5 +206,97 @@ fn check_label(label: &Statement, label_ids: &mut HashSet<String>) {
             }
         }
         _ => (),
+    }
+}
+
+struct Labeller {
+    count: u8,
+}
+
+#[derive(Clone)]
+enum LoopType {
+    For,
+    While,
+    DoWhile,
+}
+
+fn label_loops(Program::Function(name, block_items): Program) -> Program {
+    Program::Function(name, Labeller::new().label_block(block_items, None))
+}
+
+impl Labeller {
+    fn new() -> Self {
+        Self { count: 0 }
+    }
+
+    fn label_block(
+        &mut self,
+        block_items: Vec<BlockItem>,
+        label: Option<String>,
+    ) -> Vec<BlockItem> {
+        let mut labeled = Vec::with_capacity(block_items.len());
+        for block_item in block_items {
+            match block_item {
+                BlockItem::S(stmt) => {
+                    labeled.push(BlockItem::S(self.label_statement(stmt, label.clone())))
+                }
+                decl => labeled.push(decl),
+            }
+        }
+        labeled
+    }
+
+    fn label_statement(&mut self, stmt: Statement, label: Option<String>) -> Statement {
+        match stmt {
+            stmt @ (Statement::Return(_)
+            | Statement::Exp(_)
+            | Statement::Goto(_)
+            | Statement::Null) => stmt,
+            Statement::If(cond, if_stmt, else_stmt) => Statement::If(
+                cond,
+                Box::new(self.label_statement(*if_stmt, label.clone())),
+                else_stmt.map(|stmt| Box::new(self.label_statement(*stmt, label))),
+            ),
+            Statement::Label(id, stmt) => {
+                Statement::Label(id, Box::new(self.label_statement(*stmt, label)))
+            }
+            Statement::Break(_) if label.is_none() => {
+                panic!("Break statement outside of loop")
+            }
+            Statement::Break(_) => Statement::Break(label.unwrap()),
+            Statement::Continue(_) if label.is_none() => {
+                panic!("Continue statement outside of loop")
+            }
+            Statement::Continue(_) => Statement::Continue(label.unwrap()),
+            Statement::Compound(block_items) => {
+                Statement::Compound(self.label_block(block_items, label))
+            }
+            Statement::While(_, cond, body) => {
+                let new_label = self.new_label(LoopType::While);
+                let body = self.label_statement(*body, Some(new_label.clone()));
+                Statement::While(new_label, cond, Box::new(body))
+            }
+            Statement::DoWhile(_, body, cond) => {
+                let new_label = self.new_label(LoopType::DoWhile);
+                let body = self.label_statement(*body, Some(new_label.clone()));
+                Statement::DoWhile(new_label, Box::new(body), cond)
+            }
+            Statement::For(_, init_decl, cond, post, body) => {
+                let new_label = self.new_label(LoopType::For);
+                let body = self.label_statement(*body, Some(new_label.clone()));
+                Statement::For(new_label, init_decl, cond, post, Box::new(body))
+            }
+        }
+    }
+
+    fn new_label(&mut self, loop_type: LoopType) -> String {
+        self.count += 1;
+        let loop_str = match loop_type {
+            LoopType::For => "for",
+            LoopType::While => "while",
+            LoopType::DoWhile => "do_while",
+        };
+
+        format!("{}_{}", loop_str, self.count)
     }
 }
