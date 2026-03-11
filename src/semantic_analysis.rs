@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 
-use crate::parser::{BlockItem, Declaration, Expression, ForInit, Program, Statement};
+use crate::parser::{BlockItem, CaseInfo, Declaration, Expression, ForInit, Program, Statement};
 
 struct ResolveState {
     env: Vec<HashMap<String, String>>,
@@ -79,6 +79,26 @@ impl ResolveState {
                 self.env.pop();
                 Statement::For(label, init, cond, post, Box::new(body))
             }
+            Statement::Case(label, expr, body) => Statement::Case(
+                label,
+                self.expression(expr),
+                Box::new(self.statement(*body)),
+            ),
+
+            Statement::Default(label, body) => {
+                Statement::Default(label, Box::new(self.statement(*body)))
+            }
+            Statement::Switch {
+                label,
+                expr,
+                body,
+                cases,
+            } => Statement::Switch {
+                label,
+                expr: self.expression(expr),
+                body: Box::new(self.statement(*body)),
+                cases,
+            },
         }
     }
 
@@ -160,7 +180,10 @@ impl ResolveState {
 pub fn analyze(program: Program) -> Program {
     let program = resolve_vars(program);
     check_labels(&program);
-    label_loops(program)
+    let mut program = label_loops(program);
+    let Program::Function(_, ref mut block_items) = program;
+    gather_block(block_items, None);
+    program
 }
 
 fn resolve_vars(Program::Function(name, block_items): Program) -> Program {
@@ -213,15 +236,18 @@ struct Labeller {
     count: u8,
 }
 
-#[derive(Clone)]
-enum LoopType {
+#[derive(Clone, Copy)]
+enum LabelType {
     For,
     While,
     DoWhile,
+    Switch,
+    Case,
+    Default,
 }
 
 fn label_loops(Program::Function(name, block_items): Program) -> Program {
-    Program::Function(name, Labeller::new().label_block(block_items, None))
+    Program::Function(name, Labeller::new().label_block(block_items, None, None))
 }
 
 impl Labeller {
@@ -232,21 +258,29 @@ impl Labeller {
     fn label_block(
         &mut self,
         block_items: Vec<BlockItem>,
-        label: Option<String>,
+        break_label: Option<String>,
+        continue_label: Option<String>,
     ) -> Vec<BlockItem> {
         let mut labeled = Vec::with_capacity(block_items.len());
         for block_item in block_items {
             match block_item {
-                BlockItem::S(stmt) => {
-                    labeled.push(BlockItem::S(self.label_statement(stmt, label.clone())))
-                }
+                BlockItem::S(stmt) => labeled.push(BlockItem::S(self.label_statement(
+                    stmt,
+                    break_label.clone(),
+                    continue_label.clone(),
+                ))),
                 decl => labeled.push(decl),
             }
         }
         labeled
     }
 
-    fn label_statement(&mut self, stmt: Statement, label: Option<String>) -> Statement {
+    fn label_statement(
+        &mut self,
+        stmt: Statement,
+        break_label: Option<String>,
+        continue_label: Option<String>,
+    ) -> Statement {
         match stmt {
             stmt @ (Statement::Return(_)
             | Statement::Exp(_)
@@ -254,49 +288,153 @@ impl Labeller {
             | Statement::Null) => stmt,
             Statement::If(cond, if_stmt, else_stmt) => Statement::If(
                 cond,
-                Box::new(self.label_statement(*if_stmt, label.clone())),
-                else_stmt.map(|stmt| Box::new(self.label_statement(*stmt, label))),
+                Box::new(self.label_statement(
+                    *if_stmt,
+                    break_label.clone(),
+                    continue_label.clone(),
+                )),
+                else_stmt
+                    .map(|stmt| Box::new(self.label_statement(*stmt, break_label, continue_label))),
             ),
-            Statement::Label(id, stmt) => {
-                Statement::Label(id, Box::new(self.label_statement(*stmt, label)))
+            Statement::Label(id, stmt) => Statement::Label(
+                id,
+                Box::new(self.label_statement(*stmt, break_label, continue_label)),
+            ),
+            Statement::Break(_) if break_label.is_none() => {
+                panic!("Break statement outside of loop or switch")
             }
-            Statement::Break(_) if label.is_none() => {
-                panic!("Break statement outside of loop")
-            }
-            Statement::Break(_) => Statement::Break(label.unwrap()),
-            Statement::Continue(_) if label.is_none() => {
+            Statement::Break(_) => Statement::Break(break_label.unwrap().to_string()),
+            Statement::Continue(_) if continue_label.is_none() => {
                 panic!("Continue statement outside of loop")
             }
-            Statement::Continue(_) => Statement::Continue(label.unwrap()),
+            Statement::Continue(_) => Statement::Continue(continue_label.unwrap().to_string()),
             Statement::Compound(block_items) => {
-                Statement::Compound(self.label_block(block_items, label))
+                Statement::Compound(self.label_block(block_items, break_label, continue_label))
             }
             Statement::While(_, cond, body) => {
-                let new_label = self.new_label(LoopType::While);
-                let body = self.label_statement(*body, Some(new_label.clone()));
-                Statement::While(new_label, cond, Box::new(body))
+                let new_label = self.new_label(LabelType::While);
+                let body =
+                    self.label_statement(*body, Some(new_label.clone()), Some(new_label.clone()));
+                Statement::While(new_label.to_string(), cond, Box::new(body))
             }
             Statement::DoWhile(_, body, cond) => {
-                let new_label = self.new_label(LoopType::DoWhile);
-                let body = self.label_statement(*body, Some(new_label.clone()));
-                Statement::DoWhile(new_label, Box::new(body), cond)
+                let new_label = self.new_label(LabelType::DoWhile);
+                let body =
+                    self.label_statement(*body, Some(new_label.clone()), Some(new_label.clone()));
+                Statement::DoWhile(new_label.to_string(), Box::new(body), cond)
             }
             Statement::For(_, init_decl, cond, post, body) => {
-                let new_label = self.new_label(LoopType::For);
-                let body = self.label_statement(*body, Some(new_label.clone()));
-                Statement::For(new_label, init_decl, cond, post, Box::new(body))
+                let new_label = self.new_label(LabelType::For);
+                let body =
+                    self.label_statement(*body, Some(new_label.clone()), Some(new_label.clone()));
+                Statement::For(new_label.to_string(), init_decl, cond, post, Box::new(body))
+            }
+            Statement::Case(_, expr, stmt) => {
+                let stmt = self.label_statement(*stmt, break_label.clone(), continue_label);
+                let l = self.new_label(LabelType::Case);
+                Statement::Case(l.to_string(), expr, Box::new(stmt))
+            }
+            Statement::Default(_, stmt) => {
+                let stmt = self.label_statement(*stmt, break_label, continue_label);
+                let l = self.new_label(LabelType::Default);
+                Statement::Default(l.to_string(), Box::new(stmt))
+            }
+            Statement::Switch {
+                label: _,
+                expr,
+                body,
+                cases,
+            } => {
+                let new_label = self.new_label(LabelType::Switch);
+                let body =
+                    Box::new(self.label_statement(*body, Some(new_label.clone()), continue_label));
+                Statement::Switch {
+                    label: new_label,
+                    expr,
+                    body,
+                    cases,
+                }
             }
         }
     }
 
-    fn new_label(&mut self, loop_type: LoopType) -> String {
+    fn new_label(&mut self, label_type: LabelType) -> String {
         self.count += 1;
-        let loop_str = match loop_type {
-            LoopType::For => "for",
-            LoopType::While => "while",
-            LoopType::DoWhile => "do_while",
+        let label_str = match label_type {
+            LabelType::For => "for",
+            LabelType::While => "while",
+            LabelType::DoWhile => "do_while",
+            LabelType::Switch => "switch",
+            LabelType::Case => "case",
+            LabelType::Default => "default",
         };
 
-        format!("{}_{}", loop_str, self.count)
+        format!("{}_{}", label_str, self.count)
+    }
+}
+
+fn gather_block(block_items: &mut Vec<BlockItem>, mut cases: Option<&mut Vec<CaseInfo>>) {
+    for block_item in block_items {
+        if let BlockItem::S(stmt) = block_item {
+            gather_statement(stmt, cases.as_deref_mut()); // TODO bad
+        }
+    }
+}
+
+fn gather_statement(stmt: &mut Statement, mut cases: Option<&mut Vec<CaseInfo>>) {
+    match stmt {
+        Statement::If(_, if_stmt, else_stmt) => {
+            gather_statement(if_stmt, cases.as_deref_mut());
+            if let Some(stmt) = else_stmt {
+                gather_statement(stmt, cases);
+            }
+        }
+        Statement::Label(_, stmt) => gather_statement(stmt, cases),
+        Statement::Compound(block_items) => gather_block(block_items, cases),
+        Statement::While(_, _, stmt) => gather_statement(stmt, cases),
+        Statement::For(_, _, _, _, body) => gather_statement(body, cases),
+        Statement::DoWhile(_, body, _) => gather_statement(body, cases),
+        Statement::Switch {
+            label: _,
+            expr: _,
+            body,
+            cases,
+        } => gather_statement(body, Some(cases)),
+        Statement::Case(label, expr, stmt) => {
+            gather_statement(stmt, cases.as_deref_mut());
+            match expr {
+                Expression::Constant(n) if cases.is_some() => {
+                    let c = cases.unwrap();
+                    if c.iter()
+                        .any(|ci| matches!(ci, CaseInfo::Case { expr: m, label: _ } if n == m))
+                    {
+                        panic!("Duplicate case in switch statement");
+                    }
+                    c.push(CaseInfo::Case {
+                        expr: *n,
+                        label: label.to_string(),
+                    });
+                }
+                _ if cases.is_some() => panic!("Non-integral expression in case"),
+                _ => panic!("Case outside of switch statement"),
+            }
+        }
+        Statement::Default(label, stmt) => {
+            gather_statement(stmt, cases.as_deref_mut());
+            match cases {
+                None => panic!("Default outside of switch statement"),
+                Some(c) => {
+                    if c.iter()
+                        .any(|ci| matches!(ci, CaseInfo::Default { label: _ }))
+                    {
+                        panic!("Duplicate default inside of switch")
+                    }
+                    c.push(CaseInfo::Default {
+                        label: label.to_string(),
+                    });
+                }
+            }
+        }
+        _ => (),
     }
 }

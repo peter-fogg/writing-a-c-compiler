@@ -1,6 +1,6 @@
 use crate::parser::{
-    BinaryOperator, BlockItem, CompoundOperator, Crement, Declaration, Expression, Fixity, ForInit,
-    Program, Statement, UnaryOperator,
+    BinaryOperator, BlockItem, CaseInfo, CompoundOperator, Crement, Declaration, Expression,
+    Fixity, ForInit, Program, Statement, UnaryOperator,
 };
 
 #[derive(Debug, PartialEq, Clone, Copy)]
@@ -217,6 +217,58 @@ impl TackifyState {
                     },
                     Instr::Label("break".to_owned() + &label),
                 ])
+            }
+            Statement::Case(label, _expr, stmt) => {
+                instrs.push(Instr::Label(label));
+                self.tackify_statement(*stmt, instrs);
+            }
+            Statement::Default(label, stmt) => {
+                instrs.push(Instr::Label(label));
+                self.tackify_statement(*stmt, instrs);
+            }
+            Statement::Switch {
+                label,
+                expr,
+                body,
+                cases,
+            } => {
+                let result = self.tackify_expr(expr, instrs);
+                let (cases, default): (Vec<_>, Vec<_>) = cases
+                    .iter()
+                    .partition(|ci| matches!(ci, CaseInfo::Case { expr: _, label: _ }));
+                for case in cases {
+                    match case {
+                        CaseInfo::Case { expr: n, label } => {
+                            let val = Val::Constant(*n);
+                            let binop = BinaryOp::Equals;
+                            let dst = Val::Var(self.new_temp("case_tmp"));
+                            instrs.push(Instr::Binary {
+                                binop,
+                                src1: val,
+                                src2: result.clone(),
+                                dst: dst.clone(),
+                            });
+                            instrs.push(Instr::JumpIfNotZero {
+                                condition: dst,
+                                target: label.to_string(),
+                            })
+                        }
+                        _ => unreachable!(),
+                    }
+                }
+                if default.len() == 1 {
+                    match default[0] {
+                        CaseInfo::Default { label } => instrs.push(Instr::Jump {
+                            target: label.to_string(),
+                        }),
+                        _ => unreachable!(),
+                    }
+                }
+                instrs.push(Instr::Jump {
+                    target: "break".to_owned() + &label,
+                });
+                self.tackify_statement(*body, instrs);
+                instrs.push(Instr::Label("break".to_owned() + &label));
             }
         }
     }

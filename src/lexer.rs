@@ -53,6 +53,9 @@ pub enum Token<'a> {
     For,
     Break,
     Continue,
+    Switch,
+    Case,
+    Default,
 }
 
 #[derive(Debug)]
@@ -102,6 +105,9 @@ impl<'a> Lexer<'a> {
             "for" => Token::For,
             "break" => Token::Break,
             "continue" => Token::Continue,
+            "switch" => Token::Switch,
+            "case" => Token::Case,
+            "default" => Token::Default,
             _ => Token::Id(id),
         }
     }

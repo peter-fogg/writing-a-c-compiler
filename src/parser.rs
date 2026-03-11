@@ -87,7 +87,21 @@ pub enum Statement {
         Box<Statement>,
     ),
     DoWhile(String, Box<Statement>, Expression),
+    Switch {
+        label: String,
+        expr: Expression,
+        body: Box<Statement>,
+        cases: Vec<CaseInfo>,
+    },
+    Case(String, Expression, Box<Statement>),
+    Default(String, Box<Statement>),
     Null,
+}
+
+#[derive(Debug, PartialEq, Clone)]
+pub enum CaseInfo {
+    Case { expr: i32, label: String },
+    Default { label: String },
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -353,6 +367,32 @@ impl<'a> Parser<'a> {
                 let body = self.statement();
 
                 Statement::For(UNLABELLED.to_string(), init, cond, post, Box::new(body))
+            }
+            Some(Token::Switch) => {
+                self.consume(Token::Switch);
+                self.consume(Token::LParen);
+                let expr = self.expression(Prec::Bottom);
+                self.consume(Token::RParen);
+                let body = Box::new(self.statement());
+                Statement::Switch {
+                    label: UNLABELLED.to_string(),
+                    expr,
+                    body,
+                    cases: vec![],
+                }
+            }
+            Some(Token::Case) => {
+                self.consume(Token::Case);
+                let expr = self.expression(Prec::Bottom);
+                self.consume(Token::Colon);
+                let stmt = self.statement();
+                Statement::Case(UNLABELLED.to_string(), expr, Box::new(stmt))
+            }
+            Some(Token::Default) => {
+                self.consume(Token::Default);
+                self.consume(Token::Colon);
+                let stmt = self.statement();
+                Statement::Default(UNLABELLED.to_string(), Box::new(stmt))
             }
             Some(_) => {
                 let expr = Statement::Exp(self.expression(Prec::Bottom));
