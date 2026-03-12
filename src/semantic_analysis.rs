@@ -195,40 +195,64 @@ fn resolve_vars(Program::Function(name, block_items): Program) -> Program {
     Program::Function(name, resolved_items)
 }
 
-fn check_labels(Program::Function(name, block_items): &Program) {
+fn check_labels(Program::Function(_name, block_items): &Program) {
     let mut label_ids = HashSet::new();
-    for block_item in block_items {
-        if let BlockItem::S(stmt) = block_item {
-            check_label(stmt, &mut label_ids);
-        }
-    }
+    let mut gotos = HashSet::new(); // TODO gather gotos as well and compare them
+    check_block_label(block_items, &mut label_ids, &mut gotos);
 
-    for block_item in block_items {
-        if let BlockItem::S(Statement::Goto(id)) = block_item
-            && !label_ids.contains(id)
-        {
-            println!("{:?}", label_ids);
-            panic!("Goto to unknown label {:?} in function {:?}", id, name)
+    for goto in gotos {
+        if !label_ids.contains(&goto) {
+            panic!("Goto to unknown label {}", goto)
         }
     }
 }
 
-fn check_label(label: &Statement, label_ids: &mut HashSet<String>) {
+fn check_block_label(
+    block_items: &Vec<BlockItem>,
+    label_ids: &mut HashSet<String>,
+    gotos: &mut HashSet<String>,
+) {
+    for block_item in block_items {
+        if let BlockItem::S(stmt) = block_item {
+            check_statement_label(stmt, label_ids, gotos);
+        }
+    }
+}
+
+fn check_statement_label(
+    label: &Statement,
+    label_ids: &mut HashSet<String>,
+    gotos: &mut HashSet<String>,
+) {
     match label {
         Statement::Label(id, stmt) => {
             if label_ids.contains(id) {
                 panic!("Duplicate label {:?}", id)
             }
             label_ids.insert(id.to_string());
-            check_label(stmt, label_ids);
+            check_statement_label(stmt, label_ids, gotos);
         }
         Statement::If(_cond, if_stmt, else_stmt) => {
-            check_label(if_stmt, label_ids);
+            check_statement_label(if_stmt, label_ids, gotos);
             if let Some(stmt) = else_stmt {
-                check_label(stmt, label_ids)
+                check_statement_label(stmt, label_ids, gotos)
             }
         }
-        _ => (),
+        Statement::Compound(block_items) => check_block_label(block_items, label_ids, gotos),
+        Statement::While(_, _, body) => check_statement_label(body, label_ids, gotos),
+        Statement::For(_, _, _, _, body) => check_statement_label(body, label_ids, gotos),
+        Statement::DoWhile(_, body, _) => check_statement_label(body, label_ids, gotos),
+        Statement::Switch { body, .. } => check_statement_label(body, label_ids, gotos),
+        Statement::Case(_, _, stmt) => check_statement_label(stmt, label_ids, gotos),
+        Statement::Default(_, stmt) => check_statement_label(stmt, label_ids, gotos),
+        Statement::Goto(label) => {
+            gotos.insert(label.to_string());
+        }
+        Statement::Break(_)
+        | Statement::Continue(_)
+        | Statement::Exp(_)
+        | Statement::Null
+        | Statement::Return(_) => (),
     }
 }
 
