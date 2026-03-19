@@ -1,9 +1,23 @@
 use std::collections::{HashMap, HashSet};
 
-use crate::parser::{BlockItem, CaseInfo, Declaration, Expression, ForInit, Program, Statement};
+use crate::parser::{
+    BlockItem, CaseInfo, Declaration, Expression, ForInit, Function, Statement, Var,
+};
+
+#[derive(PartialEq, Eq, Debug, Copy, Clone)]
+enum Linkage {
+    External,
+    None,
+}
+
+#[derive(PartialEq, Eq, Debug, Clone)]
+struct ResolutionInfo {
+    name: String,
+    linkage: Linkage,
+}
 
 struct ResolveState {
-    env: Vec<HashMap<String, String>>,
+    env: Vec<HashMap<String, ResolutionInfo>>,
     count: u8,
 }
 
@@ -19,16 +33,79 @@ impl ResolveState {
         resolved_items
     }
 
-    pub fn declaration(&mut self, Declaration { name, init }: Declaration) -> Declaration {
-        if self.env.last().unwrap().contains_key(&name) {
+    fn var_declaration(&mut self, Var { name, init }: Var) -> Var {
+        if self.current_scope_has(&name) {
             panic!("Duplicate variable name {}", name);
         }
         let new_name = self.new_temp(name.clone());
-        self.put_env(name, new_name.clone());
+        let res_info = ResolutionInfo {
+            name: new_name.clone(),
+            linkage: Linkage::None,
+        };
+        self.put_env(name, res_info);
+
         let init = init.map(|exp| self.expression(exp));
-        Declaration {
+        Var {
             name: new_name,
             init,
+        }
+    }
+
+    fn param(&mut self, name: String) -> String {
+        if self.current_scope_has(&name) {
+            panic!("Duplicate variable name {}", name);
+        }
+        let new_name = self.new_temp(name.clone());
+        let res_info = ResolutionInfo {
+            name: new_name.clone(),
+            linkage: Linkage::None,
+        };
+        self.put_env(name, res_info);
+        new_name
+    }
+
+    fn func_declaration(&mut self, Function { name, params, body }: Function) -> Function {
+        if self.current_scope_has(&name)
+            && let Some(ResolutionInfo { name, linkage }) = self.get_env(&name)
+                && *linkage == Linkage::None
+            {
+                panic!("Duplicate function declaration {}", name);
+            }
+
+        self.put_env(
+            name.clone(),
+            ResolutionInfo {
+                name: name.clone(),
+                linkage: Linkage::External,
+            },
+        );
+
+        self.env.push(HashMap::new());
+
+        let mut new_params = Vec::with_capacity(params.len());
+        for param in params {
+            new_params.push(self.param(param));
+        }
+
+        if body.is_some() && self.env.len() > 2 {
+            panic!("Nested function declaration {}", name)
+        }
+
+        let body = body.map(|body| self.block(body));
+
+        self.env.pop();
+
+        Function {
+            name,
+            params: new_params,
+            body,
+        }
+    }
+
+    pub fn declaration(&mut self, decl: Declaration) -> Declaration {
+        match decl {
+            Declaration::Var(var) => Declaration::Var(self.var_declaration(var)),
+            Declaration::Func(func) => Declaration::Func(self.func_declaration(func)),
         }
     }
 
@@ -69,7 +146,7 @@ impl ResolveState {
             Statement::For(label, init, cond, post, body) => {
                 self.env.push(HashMap::new());
                 let init = match init {
-                    ForInit::Decl(decl) => ForInit::Decl(self.declaration(decl)),
+                    ForInit::Decl(decl) => ForInit::Decl(self.var_declaration(decl)),
                     ForInit::Exp(expr) => ForInit::Exp(self.expression(expr)),
                     ForInit::Null => ForInit::Null,
                 };
@@ -84,7 +161,6 @@ impl ResolveState {
                 self.expression(expr),
                 Box::new(self.statement(*body)),
             ),
-
             Statement::Default(label, body) => {
                 Statement::Default(label, Box::new(self.statement(*body)))
             }
@@ -102,8 +178,8 @@ impl ResolveState {
         }
     }
 
-    pub fn expression(&mut self, exp: Expression) -> Expression {
-        match exp {
+    pub fn expression(&mut self, expr: Expression) -> Expression {
+        match expr {
             Expression::Assign(lhs, rhs) => {
                 if let Expression::Var(_) = *lhs {
                     Expression::Assign(
@@ -115,8 +191,8 @@ impl ResolveState {
                 }
             }
             Expression::Var(id) => {
-                if let Some(var) = self.get_env(&id) {
-                    Expression::Var(var)
+                if let Some(ResolutionInfo { name, .. }) = self.get_env(&id) {
+                    Expression::Var(name.to_string())
                 } else {
                     panic!("Undeclared variable {:?}", id);
                 }
@@ -154,6 +230,19 @@ impl ResolveState {
                 let else_expr = self.expression(*else_expr);
                 Expression::Conditional(Box::new(cond_expr), Box::new(if_expr), Box::new(else_expr))
             }
+            Expression::Call(name, args) => {
+                if let Some(ResolutionInfo { name, .. }) = self.get_env(&name) {
+                    let name = name.to_string();
+                    let mut new_args = Vec::with_capacity(args.len());
+                    for arg in args {
+                        new_args.push(self.expression(arg));
+                    }
+
+                    Expression::Call(name, new_args)
+                } else {
+                    panic!("Undeclared function {}", name);
+                }
+            }
         }
     }
 
@@ -163,42 +252,65 @@ impl ResolveState {
         format!("{}.resolved.{}", var_name, count)
     }
 
-    fn get_env(&self, var_name: &String) -> Option<String> {
+    fn get_env(&self, var_name: &String) -> Option<&ResolutionInfo> {
         for map in self.env.iter().rev() {
             if map.contains_key(var_name) {
-                return Some(map.get(var_name).unwrap().to_string());
+                return Some(map.get(var_name).unwrap());
             }
         }
         None
     }
 
-    fn put_env(&mut self, var_name: String, resolved: String) {
-        self.env.last_mut().unwrap().insert(var_name, resolved);
+    fn put_env(&mut self, var_name: String, info: ResolutionInfo) {
+        self.env.last_mut().unwrap().insert(var_name, info);
     }
+
+    fn current_scope_has(&self, var_name: &String) -> bool {
+        self.env.last().unwrap().contains_key(var_name)
+    }
+
+    // fn function(&mut self, Function { name, body, params }: Function) -> Function {
+    //     let body = body.map(|body| self.block(body));
+    //     Function { name, body, params }
+    // }
 }
 
-pub fn analyze(program: Program) -> Program {
-    let program = resolve_vars(program);
-    check_labels(&program);
-    let mut program = label_loops(program);
-    let Program::Function(_, ref mut block_items) = program;
-    gather_block(block_items, None);
-    program
-}
-
-fn resolve_vars(Program::Function(name, block_items): Program) -> Program {
+pub fn analyze(functions: Vec<Function>) -> Vec<Function> {
+    let mut analyzed = Vec::with_capacity(functions.len());
     let mut resolve_state = ResolveState {
         env: vec![HashMap::new()],
         count: 0,
     };
-    let resolved_items = resolve_state.block(block_items);
-    Program::Function(name, resolved_items)
+
+    for function in functions {
+        let function = resolve_state.func_declaration(function);
+
+        check_labels(&function);
+        let mut function = label_loops(function);
+        let Function {
+            name: _,
+            body: ref mut block_items,
+            ..
+        } = function;
+
+        if let Some(b) = block_items {
+            gather_block(b, None)
+        }
+
+        analyzed.push(function);
+    }
+
+    TypeChecker::check_program(&analyzed);
+
+    analyzed
 }
 
-fn check_labels(Program::Function(_name, block_items): &Program) {
+fn check_labels(Function { body, .. }: &Function) {
     let mut label_ids = HashSet::new();
-    let mut gotos = HashSet::new(); // TODO gather gotos as well and compare them
-    check_block_label(block_items, &mut label_ids, &mut gotos);
+    let mut gotos = HashSet::new();
+    if let Some(b) = body {
+        check_block_label(b, &mut label_ids, &mut gotos);
+    }
 
     for goto in gotos {
         if !label_ids.contains(&goto) {
@@ -270,8 +382,12 @@ enum LabelType {
     Default,
 }
 
-fn label_loops(Program::Function(name, block_items): Program) -> Program {
-    Program::Function(name, Labeller::new().label_block(block_items, None, None))
+fn label_loops(Function { name, body, params }: Function) -> Function {
+    Function {
+        name,
+        body: body.map(|body| Labeller::new().label_block(body, None, None)),
+        params,
+    }
 }
 
 impl Labeller {
@@ -460,5 +576,176 @@ fn gather_statement(stmt: &mut Statement, mut cases: Option<&mut Vec<CaseInfo>>)
             }
         }
         _ => (),
+    }
+}
+
+#[derive(PartialEq, Eq, Debug, Copy, Clone)]
+pub enum Type {
+    Int,
+    Fun { param_count: u8, defined: bool },
+}
+
+struct TypeChecker {
+    symbols: HashMap<String, Type>,
+}
+
+impl TypeChecker {
+    fn check_program(program: &Vec<Function>) {
+        let mut type_checker = TypeChecker {
+            symbols: HashMap::new(),
+        };
+
+        for function in program {
+            type_checker.check_function_decl(function);
+        }
+    }
+
+    fn check_function_decl(&mut self, Function { name, params, body }: &Function) {
+        let mut already_defined = false;
+        if let Some(Type::Fun {
+            param_count,
+            defined,
+        }) = self.symbols.get(name)
+        {
+            if *param_count != params.len() as u8 {
+                panic!(
+                    "Incompatible declaration of function {} with first declaration having {} params, second having {}",
+                    name,
+                    param_count,
+                    params.len()
+                );
+            }
+            if *defined && body.is_some() {
+                panic!("Duplicate definition of function {}", name);
+            }
+            already_defined = *defined;
+        }
+        let fun_type = Type::Fun {
+            param_count: params.len() as u8,
+            defined: body.is_some() || already_defined,
+        };
+
+        self.symbols.insert(name.to_string(), fun_type);
+
+        if let Some(block_items) = body {
+            for param in params {
+                self.symbols.insert(param.to_string(), Type::Int);
+            }
+            self.check_block(block_items);
+        }
+    }
+
+    fn check_block(&mut self, block_items: &Vec<BlockItem>) {
+        for block_item in block_items {
+            match block_item {
+                BlockItem::D(decl) => match decl {
+                    Declaration::Var(var) => self.check_var_decl(var),
+                    Declaration::Func(func) => self.check_function_decl(func),
+                },
+                BlockItem::S(stmt) => self.check_statement(stmt),
+            }
+        }
+    }
+
+    fn check_statement(&mut self, stmt: &Statement) {
+        match stmt {
+            Statement::Return(expr) => self.check_expr(expr),
+            Statement::Exp(expr) => self.check_expr(expr),
+            Statement::If(cond, if_stmt, else_stmt) => {
+                self.check_expr(cond);
+                self.check_statement(if_stmt);
+                if let Some(else_stmt) = else_stmt
+                    .as_ref() { self.check_statement(else_stmt) }
+            }
+            Statement::Goto(_) => (),
+            Statement::Label(_, stmt) => self.check_statement(stmt),
+            Statement::Compound(block_items) => self.check_block(block_items),
+            Statement::Break(_) => (),
+            Statement::Continue(_) => (),
+            Statement::While(_, cond, body) => {
+                self.check_expr(cond);
+                self.check_statement(body);
+            }
+            Statement::For(_, for_init, cond, post, body) => {
+                self.check_for_init(for_init);
+                if let Some(cond) = cond.as_ref() { self.check_expr(cond) }
+                if let Some(post) = post.as_ref() { self.check_expr(post) }
+                self.check_statement(body);
+            }
+            Statement::DoWhile(_, body, cond) => {
+                self.check_statement(body);
+                self.check_expr(cond);
+            }
+            Statement::Switch { expr, body, .. } => {
+                self.check_expr(expr);
+                self.check_statement(body);
+            }
+            Statement::Case(_, expr, stmt) => {
+                self.check_expr(expr);
+                self.check_statement(stmt);
+            }
+            Statement::Default(_, stmt) => self.check_statement(stmt),
+            Statement::Null => (),
+        }
+    }
+
+    fn check_var_decl(&mut self, Var { name, init }: &Var) {
+        self.symbols.insert(name.to_string(), Type::Int);
+        if let Some(expr) = init {
+            self.check_expr(expr)
+        };
+    }
+
+    fn check_for_init(&mut self, for_init: &ForInit) {
+        match for_init {
+            ForInit::Decl(var) => self.check_var_decl(var),
+            ForInit::Exp(expr) => self.check_expr(expr),
+            ForInit::Null => (),
+        }
+    }
+
+    fn check_expr(&mut self, expr: &Expression) {
+        match expr {
+            Expression::Constant(_) => (),
+            Expression::Unary(_, expr) => self.check_expr(expr),
+            Expression::Binary(_, lhs, rhs) => {
+                self.check_expr(lhs);
+                self.check_expr(rhs);
+            }
+            Expression::Compound(_, lhs, rhs) => {
+                self.check_expr(lhs);
+                self.check_expr(rhs);
+            }
+            Expression::Crement(_, _, expr) => self.check_expr(expr),
+            Expression::Var(id) => if let Some(Type::Fun { .. }) = self.symbols.get(id) { panic!("Function {} used as variable", id) },
+            Expression::Assign(lhs, rhs) => {
+                self.check_expr(lhs);
+                self.check_expr(rhs);
+            }
+            Expression::Conditional(cond, if_expr, else_expr) => {
+                self.check_expr(cond);
+                self.check_expr(if_expr);
+                self.check_expr(else_expr);
+            }
+            Expression::Call(name, params) => match self.symbols.get(name) {
+                Some(Type::Int) => panic!("Variable {} used as function", name),
+                Some(Type::Fun { param_count, .. }) => {
+                    if *param_count != params.len() as u8 {
+                        panic!(
+                            "Mismatched parameter count: declared as {}, called with {}",
+                            param_count,
+                            params.len()
+                        )
+                    }
+                    for param in params {
+                        self.check_expr(param);
+                    }
+                }
+                _ => panic!(
+                    "Unreachable: should have resolved function {} already",
+                    name
+                ),
+            },
+        }
     }
 }

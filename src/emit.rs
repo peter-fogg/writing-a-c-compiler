@@ -1,15 +1,24 @@
 use std::io::Result;
 use std::{fs::File, io::Write};
 
-use crate::codegen::{Assembly, BinaryOp, CondCode, Instr, Operand, Register, UnaryOp};
+use crate::codegen::{
+    AsmFunction, Assembly, BinaryOp, CondCode, Instr, Operand, Register, UnaryOp,
+};
 
-pub fn emit(Assembly::Function { name, instructions }: Assembly, mut file: File) -> Result<()> {
+pub fn emit(asm: Assembly, mut file: File) -> Result<()> {
+    for function in asm {
+        emit_fn(function, &mut file)?
+    }
+    Ok(())
+}
+
+fn emit_fn(AsmFunction { name, instructions }: AsmFunction, file: &mut File) -> Result<()> {
     file.write_all(format!("\t.globl _{}\n", name).as_bytes())?;
     file.write_all(format!("_{}:\n", name).as_bytes())?;
     file.write_all("\tpushq\t%rbp\n".as_bytes())?;
     file.write_all("\tmovq\t%rsp, %rbp\n".as_bytes())?;
     for instr in instructions {
-        emit_instr(instr, &mut file)?;
+        emit_instr(instr, file)?;
     }
     Ok(())
 }
@@ -30,6 +39,9 @@ fn emit_instr(instr: Instr, file: &mut File) -> Result<()> {
             .as_bytes(),
         )?,
         Instr::AllocateStack(n) => file.write_all(format!("\tsubq\t${}, %rsp\n", n).as_bytes())?,
+        Instr::DeallocateStack(n) => {
+            file.write_all(format!("\taddq\t${}, %rsp\n", n).as_bytes())?
+        }
         Instr::Unary { unop, dst: operand } => file.write_all(
             format!("\t{}\t{}\n", write_unop(unop), write_operand(operand, 4)).as_bytes(),
         )?,
@@ -37,8 +49,12 @@ fn emit_instr(instr: Instr, file: &mut File) -> Result<()> {
             format!(
                 "\t{}\t{}, {}\n",
                 write_binop(binop),
-                write_operand(src, 4),
-                write_operand(dst, 4)
+                if matches!(binop, BinaryOp::ShiftLeft | BinaryOp::ShiftRight) {
+                    write_operand(src, 1)
+                } else {
+                    write_operand(src, 4)
+                },
+                write_operand(dst, 4),
             )
             .as_bytes(),
         )?,
@@ -67,6 +83,11 @@ fn emit_instr(instr: Instr, file: &mut File) -> Result<()> {
             .as_bytes(),
         )?,
         Instr::Label(label) => file.write_all(format!(".L{}:\n", label).as_bytes())?,
+        Instr::Call(name) => file.write_all(format!("\tcall _{}\n", name).as_bytes())?,
+
+        Instr::Push(operand) => {
+            file.write_all(format!("\tpushq {}\n", write_operand(operand, 8)).as_bytes())?
+        }
     }
     Ok(())
 }
@@ -109,43 +130,69 @@ fn write_operand(op: Operand, bytes: u8) -> String {
     match op {
         Operand::Reg(reg) => write_register(reg, bytes),
         Operand::Imm(n) => format!("${}", n),
-        Operand::Stack(offset) => format!("-{}(%rbp)", offset),
+        Operand::Stack(offset) => format!("{}(%rbp)", offset),
         Operand::Pseudo(s) => panic!("Pseudo operand {} not replaced", s),
     }
 }
 
 fn write_register(reg: Register, bytes: u8) -> String {
     match reg {
-        Register::AX => {
-            if bytes == 4 {
-                "%eax"
-            } else {
-                "%al"
-            }
+        Register::AX | Register::CX | Register::DX => write_x_register(reg, bytes),
+        Register::R8 | Register::R9 | Register::R10 | Register::R11 => {
+            write_numeric_register(reg, bytes)
         }
-        Register::DX => {
-            if bytes == 4 {
-                "%edx"
-            } else {
-                "%dl"
-            }
-        }
-        Register::R10 => {
-            if bytes == 4 {
-                "%r10d"
-            } else {
-                "%r10b"
-            }
-        }
-        Register::R11 => {
-            if bytes == 4 {
-                "%r11d"
-            } else {
-                "%r11b"
-            }
-        }
-        Register::CX => "%ecx",
-        Register::CL => "%cl",
+        Register::DI | Register::SI => write_i_register(reg, bytes),
     }
-    .to_string()
+}
+
+fn write_numeric_register(reg: Register, bytes: u8) -> String {
+    let suffix = match bytes {
+        8 => "",
+        4 => "d",
+        1 => "b",
+        n => panic!("Bad number of bytes for register {:?}, {}", reg, n),
+    };
+    let num = match reg {
+        Register::R8 => 8,
+        Register::R9 => 9,
+        Register::R10 => 10,
+        Register::R11 => 11,
+        r => panic!("Bad numeric register {:?}", r),
+    };
+    format!("%r{}{}", num, suffix)
+}
+
+fn write_x_register(reg: Register, bytes: u8) -> String {
+    let (prefix, suffix) = match bytes {
+        8 => ("r", "x"),
+        4 => ("e", "x"),
+        1 => ("", "l"),
+        n => panic!("Bad number of bytes for register {:?}, {}", reg, n),
+    };
+
+    let letter = match reg {
+        Register::AX => "a",
+        Register::CX => "c",
+        Register::DX => "d",
+        r => panic!("Bad x register {:?}", r),
+    };
+
+    format!("%{}{}{}", prefix, letter, suffix)
+}
+
+fn write_i_register(reg: Register, bytes: u8) -> String {
+    let (prefix, suffix) = match bytes {
+        8 => ("r", ""),
+        4 => ("e", ""),
+        1 => ("", "l"),
+        _ => panic!("Bad number of bytes for register {:?}, {}", reg, bytes),
+    };
+
+    let letter = match reg {
+        Register::DI => "di",
+        Register::SI => "si",
+        r => panic!("Bad i register {:?}", r),
+    };
+
+    format!("%{}{}{}", prefix, letter, suffix)
 }

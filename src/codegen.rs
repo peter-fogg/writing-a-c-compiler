@@ -1,13 +1,13 @@
 use std::collections::HashMap;
 
-use crate::tacky;
+use crate::tacky::{self, Tacky, TackyFunction};
 
 #[derive(Debug, PartialEq, Clone)]
 pub enum Operand {
     Imm(i32),
     Reg(Register),
     Pseudo(String),
-    Stack(u8),
+    Stack(i16),
 }
 
 #[derive(Debug, PartialEq, Clone, Copy)]
@@ -31,11 +31,14 @@ pub enum BinaryOp {
 #[derive(Debug, PartialEq, Clone, Copy)]
 pub enum Register {
     AX,
+    CX,
     DX,
+    DI,
+    SI,
+    R8,
+    R9,
     R10,
     R11,
-    CL,
-    CX,
 }
 
 #[derive(Debug, PartialEq, Clone, Copy)]
@@ -66,7 +69,7 @@ pub enum Instr {
     },
     IDiv(Operand),
     Cdq,
-    AllocateStack(u8),
+    AllocateStack(u16),
     Jmp(String),
     JmpCC(CondCode, String),
     SetCC(CondCode, Operand),
@@ -75,31 +78,82 @@ pub enum Instr {
         lhs: Operand,
         rhs: Operand,
     },
+    DeallocateStack(u16),
+    Push(Operand),
+    Call(String),
+}
+#[derive(Debug, PartialEq, Clone)]
+pub struct AsmFunction {
+    pub name: String,
+    pub instructions: Vec<Instr>,
 }
 
-#[derive(Debug, PartialEq, Clone)]
-pub enum Assembly {
-    Function {
-        name: String,
-        instructions: Vec<Instr>,
-    },
-}
+pub type Assembly = Vec<AsmFunction>;
 
 struct ReplaceState {
-    offsets: HashMap<String, u8>,
-    max_offset: u8,
+    offsets: HashMap<String, u16>,
+    max_offset: u16,
 }
 
-pub fn assemble(tacky: tacky::Tacky) -> Assembly {
-    let tacky::Tacky::Function { name, instructions } = tacky;
-    let mut assembled = assemble_instructions(instructions);
-    let stack_offset = replace_pseudo(&mut assembled);
+pub fn assemble(functions: Tacky) -> Assembly {
+    let mut asm_functions = Vec::with_capacity(functions.len());
+    for function in functions {
+        asm_functions.push(assemble_function(function));
+    }
+    asm_functions
+}
 
-    assembled.insert(0, Instr::AllocateStack(stack_offset));
+fn assemble_function(
+    TackyFunction {
+        name,
+        instructions,
+        params,
+    }: TackyFunction,
+) -> AsmFunction {
+    let mut assembly = vec![];
+    let mut stack_offset = 16;
+    for stack_param in params.iter().skip(6) {
+        assembly.push(Instr::Mov {
+            src: Operand::Stack(stack_offset),
+            dst: Operand::Pseudo(stack_param.to_string()),
+        });
+        stack_offset += 8;
+    }
 
-    let fixed = fixup_instructions(assembled);
+    let reg_arg_locations = [
+        Operand::Reg(Register::DI),
+        Operand::Reg(Register::SI),
+        Operand::Reg(Register::DX),
+        Operand::Reg(Register::CX),
+        Operand::Reg(Register::R8),
+        Operand::Reg(Register::R9),
+    ]
+    .into_iter();
 
-    Assembly::Function {
+    for (param, src) in params.iter().zip(reg_arg_locations) {
+        let dst = Operand::Pseudo(param.to_string());
+        assembly.push(Instr::Mov {
+            src: src.clone(),
+            dst,
+        });
+    }
+
+    let body = assemble_instructions(instructions);
+
+    assembly.extend(body);
+
+    let stack_size = replace_pseudo(&mut assembly);
+
+    let rounded = match stack_size % 16 {
+        0 => stack_size,
+        n => stack_size + (16 - n),
+    };
+
+    assembly.insert(0, Instr::AllocateStack(rounded));
+
+    let fixed = fixup_instructions(assembly);
+
+    AsmFunction {
         name,
         instructions: fixed,
     }
@@ -198,7 +252,7 @@ fn assemble_instructions(instructions: Vec<tacky::Instr>) -> Vec<Instr> {
                     },
                     Instr::Binary {
                         binop,
-                        src: Operand::Reg(Register::CL),
+                        src: Operand::Reg(Register::CX),
                         dst,
                     },
                 ])
@@ -275,6 +329,65 @@ fn assemble_instructions(instructions: Vec<tacky::Instr>) -> Vec<Instr> {
                 },
                 Instr::JmpCC(CondCode::NE, target),
             ]),
+            tacky::Instr::Call { name, params, dst } => {
+                let arg_registers = [
+                    Register::DI,
+                    Register::SI,
+                    Register::DX,
+                    Register::CX,
+                    Register::R8,
+                    Register::R9,
+                ];
+
+                let (first_six, rest) =
+                    if let Some((first_six, rest)) = params.split_first_chunk::<6>() {
+                        (first_six.as_slice(), rest)
+                    } else {
+                        (params.as_slice(), [].as_slice())
+                    };
+
+                let stack_padding = if rest.len() % 2 == 0 { 0 } else { 8 };
+                if stack_padding != 0 {
+                    assembly.push(Instr::AllocateStack(stack_padding));
+                }
+
+                for (reg_index, tacky_param) in first_six.iter().enumerate() {
+                    let reg = arg_registers[reg_index];
+                    let asm_param = assemble_val(tacky_param.clone());
+                    assembly.push(Instr::Mov {
+                        src: asm_param,
+                        dst: Operand::Reg(reg),
+                    })
+                }
+
+                for tacky_param in rest.iter().rev() {
+                    let asm_param = assemble_val(tacky_param.clone());
+                    if matches!(asm_param, Operand::Imm(_) | Operand::Reg(_)) {
+                        assembly.push(Instr::Push(asm_param));
+                    } else {
+                        assembly.extend(vec![
+                            Instr::Mov {
+                                src: asm_param,
+                                dst: Operand::Reg(Register::AX),
+                            },
+                            Instr::Push(Operand::Reg(Register::AX)),
+                        ]);
+                    }
+                }
+
+                assembly.push(Instr::Call(name));
+
+                let bytes_to_pop = 8 * rest.len() as u16 + stack_padding;
+                if bytes_to_pop != 0 {
+                    assembly.push(Instr::DeallocateStack(bytes_to_pop));
+                }
+
+                let dst = assemble_val(dst);
+                assembly.push(Instr::Mov {
+                    src: Operand::Reg(Register::AX),
+                    dst,
+                })
+            }
         }
     }
     assembly
@@ -307,7 +420,7 @@ fn assemble_val(val: tacky::Val) -> Operand {
     }
 }
 
-fn replace_pseudo(instrs: &mut [Instr]) -> u8 {
+fn replace_pseudo(instrs: &mut [Instr]) -> u16 {
     let stack_map = HashMap::new();
     let mut replace_state = ReplaceState {
         offsets: stack_map,
@@ -383,6 +496,14 @@ fn replace_pseudo(instrs: &mut [Instr]) -> u8 {
                 let operand = replace_op(operand, &mut replace_state);
                 *instr = Instr::SetCC(cond_code, operand);
             }
+            Instr::Push(_) => {
+                let push = std::mem::replace(instr, Instr::Ret);
+                let Instr::Push(operand) = push else {
+                    unreachable!();
+                };
+                let operand = replace_op(operand, &mut replace_state);
+                *instr = Instr::Push(operand);
+            }
             _ => (),
         }
     }
@@ -397,7 +518,7 @@ fn replace_op(op: Operand, state: &mut ReplaceState) -> Operand {
                 state.max_offset += 4;
                 state.max_offset
             });
-            Operand::Stack(*offset)
+            Operand::Stack(-(*offset as i16))
         }
         op => op,
     }

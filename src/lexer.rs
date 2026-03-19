@@ -56,6 +56,7 @@ pub enum Token<'a> {
     Switch,
     Case,
     Default,
+    Comma,
 }
 
 #[derive(Debug)]
@@ -261,6 +262,7 @@ impl<'a> Iterator for Lexer<'a> {
                 "^" => return Some(self.check_next_char("=", Token::CaretEquals, Token::Caret)),
                 "?" => return Some(Token::Huh),
                 ":" => return Some(Token::Colon),
+                "," => return Some(Token::Comma),
                 c => panic!("Bad token {}", c),
             };
         }

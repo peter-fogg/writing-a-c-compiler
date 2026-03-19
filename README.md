@@ -14,3 +14,5 @@ I'm working through Nora Sandler's Writing a C Compiler in Rust. Goals are:
     than "hello, world".
 
 - Have a nice time I guess?
+
+The project is in the midst of Chapter 9 (Functions) as of mid-March 2026.

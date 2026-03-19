@@ -66,6 +66,7 @@ pub enum Expression {
     Var(String),
     Assign(Box<Expression>, Box<Expression>),
     Conditional(Box<Expression>, Box<Expression>, Box<Expression>),
+    Call(String, Vec<Expression>),
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -106,15 +107,15 @@ pub enum CaseInfo {
 
 #[derive(Debug, PartialEq, Clone)]
 pub enum ForInit {
-    Decl(Declaration),
+    Decl(Var),
     Exp(Expression),
     Null,
 }
 
 #[derive(Debug, PartialEq, Clone)]
-pub struct Declaration {
-    pub name: String,
-    pub init: Option<Expression>,
+pub enum Declaration {
+    Var(Var),
+    Func(Function),
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -124,8 +125,16 @@ pub enum BlockItem {
 }
 
 #[derive(Debug, PartialEq, Clone)]
-pub enum Program {
-    Function(String, Vec<BlockItem>),
+pub struct Var {
+    pub name: String,
+    pub init: Option<Expression>,
+}
+
+#[derive(Debug, PartialEq, Clone)]
+pub struct Function {
+    pub name: String,
+    pub params: Vec<String>,
+    pub body: Option<Vec<BlockItem>>,
 }
 
 #[derive(Debug, PartialEq, PartialOrd, Copy, Clone)]
@@ -183,29 +192,14 @@ impl<'a> Parser<'a> {
         }
     }
 
-    pub fn parse(&mut self) -> Program {
-        self.consume(Token::Int); // only int returns for now
-        let fn_name = match self.current {
-            Some(Token::Id(s)) => s,
-            _ => {
-                panic!("Bad parse");
-            }
-        };
-        self.advance();
-        self.consume(Token::LParen);
-        self.consume(Token::Void);
-        self.consume(Token::RParen);
-
-        let block_items = self.block();
-
-        let program = Program::Function(fn_name.to_string(), block_items);
-
-        match self.current {
-            None => (),
-            Some(t) => panic!("Extra junk at end: {:?}", t),
+    pub fn parse(&mut self) -> Vec<Function> {
+        let mut fns = vec![];
+        while self.current.is_some() {
+            self.consume(Token::Int); // kind of a hack
+            fns.push(self.func_declaration())
         }
 
-        program
+        fns
     }
 
     fn block(&mut self) -> Vec<BlockItem> {
@@ -222,16 +216,42 @@ impl<'a> Parser<'a> {
         block_items
     }
 
-    fn declaration(&mut self) -> Declaration {
-        self.consume(Token::Int);
-        let name = match self.current {
+    fn name(&mut self) -> String {
+        match self.current {
             Some(Token::Id(id)) => {
                 self.advance();
                 id.to_string()
             }
             t => panic!("Expected identifier, got {:?}", t),
+        }
+    }
+
+    fn declaration(&mut self) -> Declaration {
+        self.consume(Token::Int);
+        if let Some(Token::LParen) = self.next {
+            Declaration::Func(self.func_declaration())
+        } else {
+            Declaration::Var(self.var_declaration())
+        }
+    }
+
+    fn func_declaration(&mut self) -> Function {
+        let name = self.name();
+        self.consume(Token::LParen);
+        let params = self.param_list();
+        self.consume(Token::RParen);
+        let body = if self.current == Some(Token::LBrace) {
+            Some(self.block())
+        } else {
+            self.consume(Token::Semicolon);
+            None
         };
 
+        Function { name, body, params }
+    }
+
+    fn var_declaration(&mut self) -> Var {
+        let name = self.name();
         let init = match self.current {
             Some(Token::Equals) => {
                 self.consume(Token::Equals);
@@ -243,7 +263,29 @@ impl<'a> Parser<'a> {
         };
 
         self.consume(Token::Semicolon);
-        Declaration { name, init }
+        Var { name, init }
+    }
+
+    fn param_list(&mut self) -> Vec<String> {
+        let mut params = vec![];
+        if let Some(Token::Void) = self.current {
+            self.consume(Token::Void);
+            return params;
+        }
+
+        while {
+            self.consume(Token::Int);
+            let name = self.name();
+            params.push(name.clone());
+
+            let comma = self.current == Some(Token::Comma);
+            if comma {
+                self.consume(Token::Comma);
+            }
+            comma
+        } {}
+
+        params
     }
 
     fn block_item(&mut self) -> BlockItem {
@@ -337,7 +379,10 @@ impl<'a> Parser<'a> {
                 self.consume(Token::For);
                 self.consume(Token::LParen);
                 let init = match self.current {
-                    Some(Token::Int) => ForInit::Decl(self.declaration()),
+                    Some(Token::Int) => {
+                        self.consume(Token::Int);
+                        ForInit::Decl(self.var_declaration())
+                    }
                     Some(Token::Semicolon) => {
                         self.consume(Token::Semicolon);
                         ForInit::Null
@@ -584,9 +629,29 @@ impl<'a> Parser<'a> {
                 Expression::Unary(un_op, Box::new(inner_expr))
             }
             Some(Token::Id(id)) => {
-                let id = id.to_string();
                 self.advance();
-                Expression::Var(id)
+                let id = id.to_string();
+                if let Some(Token::LParen) = self.current {
+                    self.consume(Token::LParen);
+                    let mut params = vec![];
+                    if let Some(Token::RParen) = self.current {
+                        self.consume(Token::RParen);
+                    } else {
+                        while {
+                            let expr = self.expression(Prec::Bottom);
+                            params.push(expr);
+                            let comma = self.current == Some(Token::Comma);
+                            if comma {
+                                self.consume(Token::Comma);
+                            }
+                            comma
+                        } {}
+                        self.consume(Token::RParen);
+                    }
+                    Expression::Call(id, params)
+                } else {
+                    Expression::Var(id)
+                }
             }
             Some(Token::DoublePlus | Token::DoubleMinus) => {
                 let crement = match self.current {

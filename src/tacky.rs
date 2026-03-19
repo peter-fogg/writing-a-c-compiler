@@ -1,6 +1,6 @@
 use crate::parser::{
     BinaryOperator, BlockItem, CaseInfo, CompoundOperator, Crement, Declaration, Expression,
-    Fixity, ForInit, Program, Statement, UnaryOperator,
+    Fixity, ForInit, Function, Statement, UnaryOperator, Var,
 };
 
 #[derive(Debug, PartialEq, Clone, Copy)]
@@ -66,33 +66,55 @@ pub enum Instr {
         target: String,
     },
     Label(String),
+    Call {
+        name: String,
+        params: Vec<Val>,
+        dst: Val,
+    },
 }
 
 #[derive(Debug, PartialEq, Clone)]
-pub enum Tacky {
-    Function {
-        name: String,
-        instructions: Vec<Instr>,
-    },
+pub struct TackyFunction {
+    pub name: String,
+    pub params: Vec<String>,
+    pub instructions: Vec<Instr>,
 }
+
+pub type Tacky = Vec<TackyFunction>;
 
 struct TackifyState {
     count: u8,
 }
 
-pub fn emit_tacky(ast: Program) -> Tacky {
-    let Program::Function(name, block_items) = ast;
-    let mut instructions = Vec::new();
+pub fn emit_tacky(functions: Vec<Function>) -> Tacky {
+    let mut program = Vec::new();
 
     let mut tackify_state = TackifyState::new();
-    tackify_state.tackify_block(block_items, &mut instructions);
-    instructions.push(Instr::Return(Val::Constant(0)));
-    Tacky::Function { name, instructions }
+
+    for function in functions {
+        tackify_state.tackify_function(function, &mut program);
+    }
+
+    program
 }
 
 impl TackifyState {
     pub fn new() -> Self {
         Self { count: 0 }
+    }
+
+    fn tackify_function(&mut self, Function { name, params, body }: Function, program: &mut Tacky) {
+        if let Some(body) = body {
+            let mut instructions = Vec::new();
+            let name = name.clone();
+            self.tackify_block(body, &mut instructions);
+            instructions.push(Instr::Return(Val::Constant(0)));
+            program.push(TackyFunction {
+                name,
+                params: params,
+                instructions,
+            });
+        }
     }
 
     fn tackify_block(&mut self, block_items: Vec<BlockItem>, instrs: &mut Vec<Instr>) {
@@ -105,12 +127,18 @@ impl TackifyState {
     }
 
     fn tackify_declaration(&mut self, decl: Declaration, instrs: &mut Vec<Instr>) {
-        if let Some(expr) = decl.init {
-            let expr = self.tackify_expr(expr, instrs);
-            instrs.push(Instr::Copy {
-                src: expr,
-                dst: Val::Var(decl.name),
-            });
+        match decl {
+            Declaration::Var(Var { name, init }) => {
+                if let Some(expr) = init {
+                    let expr = self.tackify_expr(expr, instrs);
+                    instrs.push(Instr::Copy {
+                        src: expr,
+                        dst: Val::Var(name),
+                    });
+                }
+            }
+            //Declaration::Func(function) => self.tackify_function(function, instrs),
+            Declaration::Func(_) => (),
         }
     }
 
@@ -191,7 +219,7 @@ impl TackifyState {
             Statement::For(label, init, cond, post, body) => {
                 match init {
                     ForInit::Decl(decl) => {
-                        self.tackify_declaration(decl, instrs);
+                        self.tackify_declaration(Declaration::Var(decl), instrs);
                     }
                     ForInit::Exp(expr) => {
                         self.tackify_expr(expr, instrs);
@@ -475,6 +503,20 @@ impl TackifyState {
                     Instr::Label(end_label),
                 ]);
                 cond_dst
+            }
+            Expression::Call(name, param_exprs) => {
+                let mut params = Vec::with_capacity(param_exprs.len());
+                for param in param_exprs {
+                    params.push(self.tackify_expr(param, instrs));
+                }
+                let dst = Val::Var(self.new_temp("call"));
+                instrs.push(Instr::Call {
+                    name,
+                    params,
+                    dst: dst.clone(),
+                });
+
+                dst
             }
         }
     }

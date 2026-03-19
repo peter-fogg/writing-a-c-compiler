@@ -12,6 +12,7 @@ mod tacky;
 
 fn main() {
     let mut args = env::args().collect::<Vec<String>>();
+    let library = args.contains(&"-c".to_string());
     let c_path = &args.pop().unwrap().clone();
     let path = path::Path::new(c_path);
     let i_path = path.with_extension("i");
@@ -22,26 +23,33 @@ fn main() {
     let data = fs::read_to_string(i_path);
     let s_path = path.with_extension("s");
     match data {
-        Ok(text) => compile_file(text, &s_path, args),
+        Ok(text) => compile_file(text, &s_path, &args),
         Err(err) => println!("Error reading source file: [{}]", err),
     }
-    let out_path = path.with_extension("");
+    let out_path = if library {
+        path.with_extension("o")
+    } else {
+        path.with_extension("")
+    };
     std::process::Command::new("arch")
         .args([
             "-x86_64",
             "gcc",
+            if library { "-c" } else { "" },
             s_path.to_str().unwrap(),
             "-o",
             out_path.to_str().unwrap(),
         ])
         .output()
         .expect("Failed to assemble .s file");
-    std::process::Command::new(out_path.to_str().unwrap())
-        .output()
-        .expect("Failed to run executable");
+    if !library {
+        std::process::Command::new(out_path.to_str().unwrap())
+            .output()
+            .expect("Failed to run executable");
+    }
 }
 
-fn compile_file(text: String, assembly_path: &path::Path, rest_args: Vec<String>) {
+fn compile_file(text: String, assembly_path: &path::Path, rest_args: &Vec<String>) {
     let lexed = lexer::Lexer::new(&text);
     if rest_args.iter().any(|s| s == "--lex") {
         println!("{:?}", lexed.collect::<Vec<_>>());
@@ -58,7 +66,7 @@ fn compile_file(text: String, assembly_path: &path::Path, rest_args: Vec<String>
         std::process::exit(0);
     }
     let tackified = tacky::emit_tacky(analyzed);
-    if rest_args.iter().any(|s| s == "--tackify") {
+    if rest_args.iter().any(|s| s == "--tacky") {
         println!("{:?}", tackified);
         std::process::exit(0);
     }
