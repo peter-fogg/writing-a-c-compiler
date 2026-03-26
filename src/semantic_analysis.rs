@@ -1,13 +1,19 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::parser::{
-    BlockItem, CaseInfo, Declaration, Expression, ForInit, Function, Statement, Var,
+    BlockItem, CaseInfo, Declaration, Expression, ForInit, Function, Statement, StorageClass, Var,
 };
 
 #[derive(PartialEq, Eq, Debug, Copy, Clone)]
 enum Linkage {
     External,
     None,
+}
+
+#[derive(PartialEq, Eq, Debug, Copy, Clone)]
+enum DeclScope {
+    Block,
+    File,
 }
 
 #[derive(PartialEq, Eq, Debug, Clone)]
@@ -33,21 +39,67 @@ impl ResolveState {
         resolved_items
     }
 
-    fn var_declaration(&mut self, Var { name, init }: Var) -> Var {
-        if self.current_scope_has(&name) {
+    fn block_var_declaration(
+        &mut self,
+        Var {
+            name,
+            init,
+            storage,
+        }: Var,
+    ) -> Var {
+        self.put_env(
+            name.clone(),
+            ResolutionInfo {
+                name: name.clone(),
+                linkage: Linkage::External,
+            },
+        );
+        Var {
+            name,
+            init,
+            storage,
+        }
+    }
+
+    fn local_var_declaration(
+        &mut self,
+        Var {
+            name,
+            init,
+            storage,
+        }: Var,
+    ) -> Var {
+        if self.current_scope_has(&name)
+            && let Some(ResolutionInfo { name, linkage }) = self.get_env(&name)
+            && !(*linkage != Linkage::None && storage == Some(StorageClass::Extern))
+        {
             panic!("Duplicate variable name {}", name);
         }
-        let new_name = self.new_temp(name.clone());
-        let res_info = ResolutionInfo {
-            name: new_name.clone(),
-            linkage: Linkage::None,
-        };
-        self.put_env(name, res_info);
+        if storage == Some(StorageClass::Extern) {
+            let res_info = ResolutionInfo {
+                name: name.clone(),
+                linkage: Linkage::External,
+            };
+            self.put_env(name.clone(), res_info);
+            Var {
+                name,
+                storage,
+                init,
+            }
+        } else {
+            let new_name = self.new_temp(name.clone());
+            let res_info = ResolutionInfo {
+                name: new_name.clone(),
+                linkage: Linkage::None,
+            };
+            self.put_env(name, res_info);
 
-        let init = init.map(|exp| self.expression(exp));
-        Var {
-            name: new_name,
-            init,
+            let init = init.map(|exp| self.expression(exp));
+            Var {
+                name: new_name,
+                init,
+                storage,
+            }
         }
     }
 
@@ -64,13 +116,28 @@ impl ResolveState {
         new_name
     }
 
-    fn func_declaration(&mut self, Function { name, params, body }: Function) -> Function {
+    fn func_declaration(
+        &mut self,
+        Function {
+            name,
+            params,
+            body,
+            storage,
+        }: Function,
+        scope: DeclScope,
+    ) -> Function {
+        if scope == DeclScope::Block && storage == Some(StorageClass::Static) {
+            panic!(
+                "Illegal static function declaration {} at block scope",
+                name
+            )
+        }
         if self.current_scope_has(&name)
             && let Some(ResolutionInfo { name, linkage }) = self.get_env(&name)
-                && *linkage == Linkage::None
-            {
-                panic!("Duplicate function declaration {}", name);
-            }
+            && *linkage == Linkage::None
+        {
+            panic!("Duplicate function declaration {}", name);
+        }
 
         self.put_env(
             name.clone(),
@@ -99,13 +166,16 @@ impl ResolveState {
             name,
             params: new_params,
             body,
+            storage,
         }
     }
 
     pub fn declaration(&mut self, decl: Declaration) -> Declaration {
         match decl {
-            Declaration::Var(var) => Declaration::Var(self.var_declaration(var)),
-            Declaration::Func(func) => Declaration::Func(self.func_declaration(func)),
+            Declaration::Var(var) => Declaration::Var(self.local_var_declaration(var)),
+            Declaration::Func(func) => {
+                Declaration::Func(self.func_declaration(func, DeclScope::Block))
+            }
         }
     }
 
@@ -146,7 +216,7 @@ impl ResolveState {
             Statement::For(label, init, cond, post, body) => {
                 self.env.push(HashMap::new());
                 let init = match init {
-                    ForInit::Decl(decl) => ForInit::Decl(self.var_declaration(decl)),
+                    ForInit::Decl(decl) => ForInit::Decl(self.local_var_declaration(decl)),
                     ForInit::Exp(expr) => ForInit::Exp(self.expression(expr)),
                     ForInit::Null => ForInit::Null,
                 };
@@ -268,41 +338,46 @@ impl ResolveState {
     fn current_scope_has(&self, var_name: &String) -> bool {
         self.env.last().unwrap().contains_key(var_name)
     }
-
-    // fn function(&mut self, Function { name, body, params }: Function) -> Function {
-    //     let body = body.map(|body| self.block(body));
-    //     Function { name, body, params }
-    // }
 }
 
-pub fn analyze(functions: Vec<Function>) -> Vec<Function> {
-    let mut analyzed = Vec::with_capacity(functions.len());
+pub fn analyze(
+    declarations: Vec<Declaration>,
+) -> (Vec<Declaration>, HashMap<String, (Type, Attrs)>) {
+    let mut analyzed = Vec::with_capacity(declarations.len());
     let mut resolve_state = ResolveState {
         env: vec![HashMap::new()],
         count: 0,
     };
 
-    for function in functions {
-        let function = resolve_state.func_declaration(function);
+    for declaration in declarations {
+        match declaration {
+            Declaration::Func(function) => {
+                let function = resolve_state.func_declaration(function, DeclScope::File);
 
-        check_labels(&function);
-        let mut function = label_loops(function);
-        let Function {
-            name: _,
-            body: ref mut block_items,
-            ..
-        } = function;
+                check_labels(&function);
+                let mut function = label_loops(function);
+                let Function {
+                    name: _,
+                    body: ref mut block_items,
+                    ..
+                } = function;
 
-        if let Some(b) = block_items {
-            gather_block(b, None)
+                if let Some(b) = block_items {
+                    gather_block(b, None)
+                }
+
+                analyzed.push(Declaration::Func(function));
+            }
+            Declaration::Var(var) => {
+                let var = resolve_state.block_var_declaration(var);
+                analyzed.push(Declaration::Var(var));
+            }
         }
-
-        analyzed.push(function);
     }
 
-    TypeChecker::check_program(&analyzed);
+    let symbols = TypeChecker::check_program(&analyzed);
 
-    analyzed
+    (analyzed, symbols)
 }
 
 fn check_labels(Function { body, .. }: &Function) {
@@ -382,11 +457,19 @@ enum LabelType {
     Default,
 }
 
-fn label_loops(Function { name, body, params }: Function) -> Function {
+fn label_loops(
+    Function {
+        name,
+        body,
+        params,
+        storage,
+    }: Function,
+) -> Function {
     Function {
         name,
         body: body.map(|body| Labeller::new().label_block(body, None, None)),
         params,
+        storage,
     }
 }
 
@@ -582,54 +665,95 @@ fn gather_statement(stmt: &mut Statement, mut cases: Option<&mut Vec<CaseInfo>>)
 #[derive(PartialEq, Eq, Debug, Copy, Clone)]
 pub enum Type {
     Int,
-    Fun { param_count: u8, defined: bool },
+    Fun { param_count: u8 },
+}
+#[derive(PartialEq, Eq, Debug, Copy, Clone)]
+pub enum Attrs {
+    Fun { defined: bool, global: bool },
+    Static { init: InitValue, global: bool },
+    Local,
+}
+
+#[derive(PartialEq, Eq, Debug, Copy, Clone)]
+pub enum InitValue {
+    Tentative,
+    Initial(i32),
+    NoInit,
 }
 
 struct TypeChecker {
-    symbols: HashMap<String, Type>,
+    symbols: HashMap<String, (Type, Attrs)>,
 }
 
 impl TypeChecker {
-    fn check_program(program: &Vec<Function>) {
+    fn check_program(program: &Vec<Declaration>) -> HashMap<String, (Type, Attrs)> {
         let mut type_checker = TypeChecker {
             symbols: HashMap::new(),
         };
 
-        for function in program {
-            type_checker.check_function_decl(function);
+        for declaration in program {
+            match declaration {
+                Declaration::Func(function) => type_checker.check_function_decl(function),
+                Declaration::Var(var) => type_checker.check_file_var_decl(var),
+            }
         }
+        type_checker.symbols
     }
 
-    fn check_function_decl(&mut self, Function { name, params, body }: &Function) {
+    fn check_function_decl(
+        &mut self,
+        Function {
+            name,
+            params,
+            body,
+            storage,
+        }: &Function,
+    ) {
         let mut already_defined = false;
-        if let Some(Type::Fun {
-            param_count,
-            defined,
-        }) = self.symbols.get(name)
-        {
-            if *param_count != params.len() as u8 {
-                panic!(
-                    "Incompatible declaration of function {} with first declaration having {} params, second having {}",
-                    name,
-                    param_count,
-                    params.len()
-                );
+        let mut global = *storage != Some(StorageClass::Static);
+        if let Some(ty) = self.symbols.get(name) {
+            if let (
+                Type::Fun { param_count },
+                Attrs::Fun {
+                    defined,
+                    global: old_global,
+                },
+            ) = ty
+            {
+                if *param_count != params.len() as u8 {
+                    panic!(
+                        "Incompatible declaration of function {} with first declaration having {} params, second having {}",
+                        name,
+                        param_count,
+                        params.len()
+                    );
+                }
+                if *defined && body.is_some() {
+                    panic!("Duplicate definition of function {}", name);
+                }
+                already_defined = *defined;
+                if *old_global && *storage == Some(StorageClass::Static) {
+                    panic!("Static function declaration {} follows non-static", name);
+                }
+                global = *old_global;
+            } else {
+                panic!("Function {} already defined as variable", name);
             }
-            if *defined && body.is_some() {
-                panic!("Duplicate definition of function {}", name);
-            }
-            already_defined = *defined;
         }
         let fun_type = Type::Fun {
             param_count: params.len() as u8,
+        };
+        let attrs = Attrs::Fun {
             defined: body.is_some() || already_defined,
+            global,
         };
 
-        self.symbols.insert(name.to_string(), fun_type);
+        self.symbols.insert(name.to_string(), (fun_type, attrs));
 
         if let Some(block_items) = body {
             for param in params {
-                self.symbols.insert(param.to_string(), Type::Int);
+                self.symbols
+                    .insert(param.to_string(), (Type::Int, Attrs::Local));
             }
             self.check_block(block_items);
         }
@@ -639,7 +763,7 @@ impl TypeChecker {
         for block_item in block_items {
             match block_item {
                 BlockItem::D(decl) => match decl {
-                    Declaration::Var(var) => self.check_var_decl(var),
+                    Declaration::Var(var) => self.check_block_var_decl(var),
                     Declaration::Func(func) => self.check_function_decl(func),
                 },
                 BlockItem::S(stmt) => self.check_statement(stmt),
@@ -654,8 +778,9 @@ impl TypeChecker {
             Statement::If(cond, if_stmt, else_stmt) => {
                 self.check_expr(cond);
                 self.check_statement(if_stmt);
-                if let Some(else_stmt) = else_stmt
-                    .as_ref() { self.check_statement(else_stmt) }
+                if let Some(else_stmt) = else_stmt.as_ref() {
+                    self.check_statement(else_stmt)
+                }
             }
             Statement::Goto(_) => (),
             Statement::Label(_, stmt) => self.check_statement(stmt),
@@ -668,8 +793,12 @@ impl TypeChecker {
             }
             Statement::For(_, for_init, cond, post, body) => {
                 self.check_for_init(for_init);
-                if let Some(cond) = cond.as_ref() { self.check_expr(cond) }
-                if let Some(post) = post.as_ref() { self.check_expr(post) }
+                if let Some(cond) = cond.as_ref() {
+                    self.check_expr(cond)
+                }
+                if let Some(post) = post.as_ref() {
+                    self.check_expr(post)
+                }
                 self.check_statement(body);
             }
             Statement::DoWhile(_, body, cond) => {
@@ -689,16 +818,127 @@ impl TypeChecker {
         }
     }
 
-    fn check_var_decl(&mut self, Var { name, init }: &Var) {
-        self.symbols.insert(name.to_string(), Type::Int);
-        if let Some(expr) = init {
-            self.check_expr(expr)
+    fn check_file_var_decl(
+        &mut self,
+        Var {
+            name,
+            init,
+            storage,
+        }: &Var,
+    ) {
+        let mut init = match init {
+            Some(Expression::Constant(n)) => InitValue::Initial(*n),
+            None => {
+                if *storage == Some(StorageClass::Extern) {
+                    InitValue::NoInit
+                } else {
+                    InitValue::Tentative
+                }
+            }
+            _ => panic!("Non-constant initialization of variable {}", name),
         };
+
+        let mut global = *storage != Some(StorageClass::Static);
+        match self.symbols.get(name) {
+            Some((Type::Fun { .. }, _)) => {
+                panic!("Function {} redeclared as variable", name)
+            }
+            Some((
+                Type::Int,
+                Attrs::Static {
+                    init: old_init,
+                    global: old_global,
+                },
+            )) => {
+                if *storage == Some(StorageClass::Extern) {
+                    global = *old_global;
+                } else if *old_global != global {
+                    panic!("Conflicting linkage of variable {}", name);
+                }
+                if let InitValue::Initial(_) = old_init {
+                    if let InitValue::Initial(_) = init {
+                        panic!("Conflicting file scope definitions of variable {}", name);
+                    }
+                    init = *old_init;
+                } else if *old_init == InitValue::Tentative
+                    && !matches!(init, InitValue::Initial(_))
+                {
+                    init = InitValue::Tentative;
+                }
+            }
+            _ => (),
+        }
+        self.symbols.insert(
+            name.to_string(),
+            (Type::Int, Attrs::Static { init, global }),
+        );
+    }
+
+    fn check_block_var_decl(
+        &mut self,
+        Var {
+            name,
+            init,
+            storage,
+        }: &Var,
+    ) {
+        match storage {
+            Some(StorageClass::Extern) => {
+                if init.is_some() {
+                    panic!("Initializer on local extern declaration {}", name);
+                }
+                if self.symbols.contains_key(name) {
+                    if let Some((Type::Fun { .. }, _)) = self.symbols.get(name) {
+                        panic!("Function {} redeclared as variable", name);
+                    }
+                } else {
+                    self.symbols.insert(
+                        name.to_string(),
+                        (
+                            Type::Int,
+                            Attrs::Static {
+                                init: InitValue::NoInit,
+                                global: true,
+                            },
+                        ),
+                    );
+                }
+            }
+            Some(StorageClass::Static) => {
+                let init = match init {
+                    Some(Expression::Constant(n)) => InitValue::Initial(*n),
+                    None => InitValue::Initial(0),
+                    _ => panic!("Non-constant initialization of variable {}", name),
+                };
+                self.symbols.insert(
+                    name.to_string(),
+                    (
+                        Type::Int,
+                        Attrs::Static {
+                            init,
+                            global: false,
+                        },
+                    ),
+                );
+            }
+            None => {
+                self.symbols
+                    .insert(name.to_string(), (Type::Int, Attrs::Local));
+                if let Some(expr) = init {
+                    self.check_expr(expr)
+                };
+            }
+        }
     }
 
     fn check_for_init(&mut self, for_init: &ForInit) {
         match for_init {
-            ForInit::Decl(var) => self.check_var_decl(var),
+            ForInit::Decl(Var {
+                storage: Some(StorageClass::Static),
+                name,
+                ..
+            }) => panic!("Static initializer {} in for loop", name),
+            ForInit::Decl(var) => self.check_block_var_decl(var),
             ForInit::Exp(expr) => self.check_expr(expr),
             ForInit::Null => (),
         }
@@ -717,7 +957,11 @@ impl TypeChecker {
                 self.check_expr(rhs);
             }
             Expression::Crement(_, _, expr) => self.check_expr(expr),
-            Expression::Var(id) => if let Some(Type::Fun { .. }) = self.symbols.get(id) { panic!("Function {} used as variable", id) },
+            Expression::Var(id) => {
+                if let Some((Type::Fun { .. }, _)) = self.symbols.get(id) {
+                    panic!("Function {} used as variable", id)
+                }
+            }
             Expression::Assign(lhs, rhs) => {
                 self.check_expr(lhs);
                 self.check_expr(rhs);
@@ -728,8 +972,8 @@ impl TypeChecker {
                 self.check_expr(else_expr);
             }
             Expression::Call(name, params) => match self.symbols.get(name) {
-                Some(Type::Int) => panic!("Variable {} used as function", name),
-                Some(Type::Fun { param_count, .. }) => {
+                Some((Type::Int, _)) => panic!("Variable {} used as function", name),
+                Some((Type::Fun { param_count, .. }, _)) => {
                     if *param_count != params.len() as u8 {
                         panic!(
                             "Mismatched parameter count: declared as {}, called with {}",

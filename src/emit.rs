@@ -2,23 +2,50 @@ use std::io::Result;
 use std::{fs::File, io::Write};
 
 use crate::codegen::{
-    AsmFunction, Assembly, BinaryOp, CondCode, Instr, Operand, Register, UnaryOp,
+    AsmTopLevel, Assembly, BinaryOp, CondCode, Instr, Operand, Register, UnaryOp,
 };
 
 pub fn emit(asm: Assembly, mut file: File) -> Result<()> {
-    for function in asm {
-        emit_fn(function, &mut file)?
+    for top_level in asm {
+        emit_top_level(top_level, &mut file)?
     }
     Ok(())
 }
 
-fn emit_fn(AsmFunction { name, instructions }: AsmFunction, file: &mut File) -> Result<()> {
-    file.write_all(format!("\t.globl _{}\n", name).as_bytes())?;
-    file.write_all(format!("_{}:\n", name).as_bytes())?;
-    file.write_all("\tpushq\t%rbp\n".as_bytes())?;
-    file.write_all("\tmovq\t%rsp, %rbp\n".as_bytes())?;
-    for instr in instructions {
-        emit_instr(instr, file)?;
+fn emit_top_level(top_level: AsmTopLevel, file: &mut File) -> Result<()> {
+    match top_level {
+        AsmTopLevel::AsmFunction {
+            name,
+            instructions,
+            global,
+        } => {
+            if global {
+                file.write_all(format!("\t.globl _{}\n", name).as_bytes())?;
+            }
+            file.write_all(format!("_{}:\n", name).as_bytes())?;
+            file.write_all("\tpushq\t%rbp\n".as_bytes())?;
+            file.write_all("\tmovq\t%rsp, %rbp\n".as_bytes())?;
+            for instr in instructions {
+                emit_instr(instr, file)?;
+            }
+        }
+        AsmTopLevel::AsmStatic { name, global, init } => {
+            if global {
+                file.write_all(format!("\t.globl _{}\n", name).as_bytes())?;
+            }
+            if init == 0 {
+                file.write_all("\t.bss\n".as_bytes())?;
+            } else {
+                file.write_all("\t.data\n".as_bytes())?;
+            }
+            file.write_all("\t.balign 4\n".as_bytes())?;
+            file.write_all(format!("_{}:\n", name).as_bytes())?;
+            if init == 0 {
+                file.write_all("\t.zero 4\n".as_bytes())?;
+            } else {
+                file.write_all(format!("\t.long {}\n", init).as_bytes())?;
+            }
+        }
     }
     Ok(())
 }
@@ -132,6 +159,7 @@ fn write_operand(op: Operand, bytes: u8) -> String {
         Operand::Imm(n) => format!("${}", n),
         Operand::Stack(offset) => format!("{}(%rbp)", offset),
         Operand::Pseudo(s) => panic!("Pseudo operand {} not replaced", s),
+        Operand::Data(var) => format!("_{}(%rip)", var),
     }
 }
 

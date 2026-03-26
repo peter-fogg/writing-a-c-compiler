@@ -128,6 +128,7 @@ pub enum BlockItem {
 pub struct Var {
     pub name: String,
     pub init: Option<Expression>,
+    pub storage: Option<StorageClass>,
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -135,6 +136,13 @@ pub struct Function {
     pub name: String,
     pub params: Vec<String>,
     pub body: Option<Vec<BlockItem>>,
+    pub storage: Option<StorageClass>,
+}
+
+#[derive(Debug, PartialEq, Clone, Copy)]
+pub enum StorageClass {
+    Static,
+    Extern,
 }
 
 #[derive(Debug, PartialEq, PartialOrd, Copy, Clone)]
@@ -192,14 +200,13 @@ impl<'a> Parser<'a> {
         }
     }
 
-    pub fn parse(&mut self) -> Vec<Function> {
-        let mut fns = vec![];
+    pub fn parse(&mut self) -> Vec<Declaration> {
+        let mut decls = vec![];
         while self.current.is_some() {
-            self.consume(Token::Int); // kind of a hack
-            fns.push(self.func_declaration())
+            decls.push(self.declaration())
         }
 
-        fns
+        decls
     }
 
     fn block(&mut self) -> Vec<BlockItem> {
@@ -227,15 +234,21 @@ impl<'a> Parser<'a> {
     }
 
     fn declaration(&mut self) -> Declaration {
-        self.consume(Token::Int);
+        let mut storage_and_type = vec![];
+        while Self::is_specifier(self.current) {
+            storage_and_type.push(self.current.unwrap());
+            self.advance();
+        }
+
+        let storage = Self::storage_class(storage_and_type);
         if let Some(Token::LParen) = self.next {
-            Declaration::Func(self.func_declaration())
+            Declaration::Func(self.func_declaration(storage))
         } else {
-            Declaration::Var(self.var_declaration())
+            Declaration::Var(self.var_declaration(storage))
         }
     }
 
-    fn func_declaration(&mut self) -> Function {
+    fn func_declaration(&mut self, storage: Option<StorageClass>) -> Function {
         let name = self.name();
         self.consume(Token::LParen);
         let params = self.param_list();
@@ -247,10 +260,15 @@ impl<'a> Parser<'a> {
             None
         };
 
-        Function { name, body, params }
+        Function {
+            name,
+            body,
+            params,
+            storage,
+        }
     }
 
-    fn var_declaration(&mut self) -> Var {
+    fn var_declaration(&mut self, storage: Option<StorageClass>) -> Var {
         let name = self.name();
         let init = match self.current {
             Some(Token::Equals) => {
@@ -263,7 +281,34 @@ impl<'a> Parser<'a> {
         };
 
         self.consume(Token::Semicolon);
-        Var { name, init }
+        Var {
+            name,
+            init,
+            storage,
+        }
+    }
+
+    fn storage_class(specifiers: Vec<Token>) -> Option<StorageClass> {
+        let mut storage_classes = vec![];
+        let mut has_type = false;
+        for specifier in specifiers {
+            match specifier {
+                Token::Int => has_type = true,
+                Token::Static | Token::Extern => storage_classes.push(specifier),
+                _ => panic!("Bad declaration specifier {:?}", specifier),
+            }
+        }
+
+        if !has_type {
+            panic!("Missing type specifier");
+        }
+
+        match &storage_classes[..] {
+            [] => None,
+            [Token::Extern] => Some(StorageClass::Extern),
+            [Token::Static] => Some(StorageClass::Static),
+            l => panic!("Too many storage classes {:?}", l),
+        }
     }
 
     fn param_list(&mut self) -> Vec<String> {
@@ -290,7 +335,7 @@ impl<'a> Parser<'a> {
 
     fn block_item(&mut self) -> BlockItem {
         match self.current {
-            Some(Token::Int) => BlockItem::D(self.declaration()),
+            t if Self::is_specifier(t) => BlockItem::D(self.declaration()),
             Some(_) => BlockItem::S(self.statement()),
             None => panic!("Unexpected end of input parsing block item"),
         }
@@ -379,10 +424,10 @@ impl<'a> Parser<'a> {
                 self.consume(Token::For);
                 self.consume(Token::LParen);
                 let init = match self.current {
-                    Some(Token::Int) => {
-                        self.consume(Token::Int);
-                        ForInit::Decl(self.var_declaration())
-                    }
+                    t if Self::is_specifier(t) => match self.declaration() {
+                        Declaration::Func(_) => panic!("Function declaration in for loop init"),
+                        Declaration::Var(var) => ForInit::Decl(var),
+                    },
                     Some(Token::Semicolon) => {
                         self.consume(Token::Semicolon);
                         ForInit::Null
@@ -723,5 +768,9 @@ impl<'a> Parser<'a> {
         };
         self.advance();
         unop
+    }
+
+    fn is_specifier(t: Option<Token<'_>>) -> bool {
+        matches!(t, Some(Token::Int | Token::Extern | Token::Static))
     }
 }

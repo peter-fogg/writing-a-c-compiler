@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
-use crate::tacky::{self, Tacky, TackyFunction};
+use crate::semantic_analysis::{Attrs, Type};
+use crate::tacky::{self, Tacky, TopLevel};
 
 #[derive(Debug, PartialEq, Clone)]
 pub enum Operand {
@@ -8,6 +9,7 @@ pub enum Operand {
     Reg(Register),
     Pseudo(String),
     Stack(i16),
+    Data(String),
 }
 
 #[derive(Debug, PartialEq, Clone, Copy)]
@@ -83,79 +85,96 @@ pub enum Instr {
     Call(String),
 }
 #[derive(Debug, PartialEq, Clone)]
-pub struct AsmFunction {
-    pub name: String,
-    pub instructions: Vec<Instr>,
+pub enum AsmTopLevel {
+    AsmFunction {
+        name: String,
+        instructions: Vec<Instr>,
+        global: bool,
+    },
+    AsmStatic {
+        name: String,
+        global: bool,
+        init: i32,
+    },
 }
 
-pub type Assembly = Vec<AsmFunction>;
+pub type Assembly = Vec<AsmTopLevel>;
 
-struct ReplaceState {
+struct ReplaceState<'a> {
     offsets: HashMap<String, u16>,
     max_offset: u16,
+    symbols: &'a HashMap<String, (Type, Attrs)>,
 }
 
-pub fn assemble(functions: Tacky) -> Assembly {
-    let mut asm_functions = Vec::with_capacity(functions.len());
-    for function in functions {
-        asm_functions.push(assemble_function(function));
+pub fn assemble(top_levels: Tacky, symbols: &HashMap<String, (Type, Attrs)>) -> Assembly {
+    let mut asm_top_levels = Vec::with_capacity(top_levels.len());
+    for top_level in top_levels {
+        asm_top_levels.push(assemble_top_level(top_level, symbols));
     }
-    asm_functions
+    asm_top_levels
 }
 
-fn assemble_function(
-    TackyFunction {
-        name,
-        instructions,
-        params,
-    }: TackyFunction,
-) -> AsmFunction {
-    let mut assembly = vec![];
-    let mut stack_offset = 16;
-    for stack_param in params.iter().skip(6) {
-        assembly.push(Instr::Mov {
-            src: Operand::Stack(stack_offset),
-            dst: Operand::Pseudo(stack_param.to_string()),
-        });
-        stack_offset += 8;
-    }
+fn assemble_top_level(
+    top_level: TopLevel,
+    symbols: &HashMap<String, (Type, Attrs)>,
+) -> AsmTopLevel {
+    match top_level {
+        TopLevel::TackyFunction {
+            name,
+            instructions,
+            params,
+            global,
+        } => {
+            let mut assembly = vec![];
+            let mut stack_offset = 16;
+            for stack_param in params.iter().skip(6) {
+                assembly.push(Instr::Mov {
+                    src: Operand::Stack(stack_offset),
+                    dst: Operand::Pseudo(stack_param.to_string()),
+                });
+                stack_offset += 8;
+            }
 
-    let reg_arg_locations = [
-        Operand::Reg(Register::DI),
-        Operand::Reg(Register::SI),
-        Operand::Reg(Register::DX),
-        Operand::Reg(Register::CX),
-        Operand::Reg(Register::R8),
-        Operand::Reg(Register::R9),
-    ]
-    .into_iter();
+            let reg_arg_locations = [
+                Operand::Reg(Register::DI),
+                Operand::Reg(Register::SI),
+                Operand::Reg(Register::DX),
+                Operand::Reg(Register::CX),
+                Operand::Reg(Register::R8),
+                Operand::Reg(Register::R9),
+            ]
+            .into_iter();
 
-    for (param, src) in params.iter().zip(reg_arg_locations) {
-        let dst = Operand::Pseudo(param.to_string());
-        assembly.push(Instr::Mov {
-            src: src.clone(),
-            dst,
-        });
-    }
+            for (param, src) in params.iter().zip(reg_arg_locations) {
+                let dst = Operand::Pseudo(param.to_string());
+                assembly.push(Instr::Mov {
+                    src: src.clone(),
+                    dst,
+                });
+            }
 
-    let body = assemble_instructions(instructions);
+            let body = assemble_instructions(instructions);
 
-    assembly.extend(body);
+            assembly.extend(body);
 
-    let stack_size = replace_pseudo(&mut assembly);
+            let stack_size = replace_pseudo(&mut assembly, symbols);
 
-    let rounded = match stack_size % 16 {
-        0 => stack_size,
-        n => stack_size + (16 - n),
-    };
+            let rounded = match stack_size % 16 {
+                0 => stack_size,
+                n => stack_size + (16 - n),
+            };
 
-    assembly.insert(0, Instr::AllocateStack(rounded));
+            assembly.insert(0, Instr::AllocateStack(rounded));
 
-    let fixed = fixup_instructions(assembly);
+            let fixed = fixup_instructions(assembly);
 
-    AsmFunction {
-        name,
-        instructions: fixed,
+            AsmTopLevel::AsmFunction {
+                name,
+                instructions: fixed,
+                global,
+            }
+        }
+        TopLevel::StaticVar { name, global, init } => AsmTopLevel::AsmStatic { name, global, init },
     }
 }
 
@@ -420,11 +439,12 @@ fn assemble_val(val: tacky::Val) -> Operand {
     }
 }
 
-fn replace_pseudo(instrs: &mut [Instr]) -> u16 {
+fn replace_pseudo(instrs: &mut [Instr], symbols: &HashMap<String, (Type, Attrs)>) -> u16 {
     let stack_map = HashMap::new();
     let mut replace_state = ReplaceState {
         offsets: stack_map,
         max_offset: 0,
+        symbols,
     };
     for instr in instrs {
         match instr {
@@ -514,32 +534,37 @@ fn replace_op(op: Operand, state: &mut ReplaceState) -> Operand {
     let stack_map = &mut state.offsets;
     match op {
         Operand::Pseudo(var) => {
-            let offset = stack_map.entry(var).or_insert_with(|| {
-                state.max_offset += 4;
-                state.max_offset
-            });
-            Operand::Stack(-(*offset as i16))
+            if let Some((_, Attrs::Static { .. })) = state.symbols.get(&var) {
+                Operand::Data(var)
+            } else {
+                let offset = stack_map.entry(var).or_insert_with(|| {
+                    state.max_offset += 4;
+                    state.max_offset
+                });
+                Operand::Stack(-(*offset as i16))
+            }
         }
         op => op,
     }
+}
+
+fn is_memory(op: &Operand) -> bool {
+    matches!(op, Operand::Data(_) | Operand::Stack(_))
 }
 
 fn fixup_instructions(instrs: Vec<Instr>) -> Vec<Instr> {
     let mut fixed = Vec::new();
     for instr in instrs {
         match instr {
-            Instr::Mov {
-                src: Operand::Stack(src_off),
-                dst: Operand::Stack(dst_off),
-            } => {
+            Instr::Mov { src: s, dst: d } if is_memory(&s) || is_memory(&d) => {
                 fixed.extend(vec![
                     Instr::Mov {
-                        src: Operand::Stack(src_off),
+                        src: s,
                         dst: Operand::Reg(Register::R10),
                     },
                     Instr::Mov {
                         src: Operand::Reg(Register::R10),
-                        dst: Operand::Stack(dst_off),
+                        dst: d,
                     },
                 ]);
             }
@@ -550,28 +575,28 @@ fn fixup_instructions(instrs: Vec<Instr>) -> Vec<Instr> {
                     | BinaryOp::BitAnd
                     | BinaryOp::BitOr
                     | BinaryOp::BitXOr),
-                src: Operand::Stack(src_off),
-                dst: Operand::Stack(dst_off),
-            } => {
+                src: s,
+                dst: d,
+            } if is_memory(&s) || is_memory(&d) => {
                 fixed.extend(vec![
                     Instr::Mov {
-                        src: Operand::Stack(src_off),
+                        src: s,
                         dst: Operand::Reg(Register::R10),
                     },
                     Instr::Binary {
                         binop,
                         src: Operand::Reg(Register::R10),
-                        dst: Operand::Stack(dst_off),
+                        dst: d,
                     },
                 ]);
             }
             Instr::Binary {
                 binop: BinaryOp::Mult,
                 src,
-                dst: Operand::Stack(dst_off),
-            } => fixed.extend(vec![
+                dst: d,
+            } if is_memory(&d) => fixed.extend(vec![
                 Instr::Mov {
-                    src: Operand::Stack(dst_off),
+                    src: d.clone(),
                     dst: Operand::Reg(Register::R11),
                 },
                 Instr::Binary {
@@ -581,7 +606,7 @@ fn fixup_instructions(instrs: Vec<Instr>) -> Vec<Instr> {
                 },
                 Instr::Mov {
                     src: Operand::Reg(Register::R11),
-                    dst: Operand::Stack(dst_off),
+                    dst: d,
                 },
             ]),
             Instr::IDiv(Operand::Imm(n)) => fixed.extend(vec![
@@ -591,7 +616,6 @@ fn fixup_instructions(instrs: Vec<Instr>) -> Vec<Instr> {
                 },
                 Instr::IDiv(Operand::Reg(Register::R10)),
             ]),
-
             Instr::Cmp {
                 lhs,
                 rhs: Operand::Imm(n),
@@ -605,17 +629,14 @@ fn fixup_instructions(instrs: Vec<Instr>) -> Vec<Instr> {
                     rhs: Operand::Reg(Register::R11),
                 },
             ]),
-            Instr::Cmp {
-                lhs: Operand::Stack(lhs_off),
-                rhs: Operand::Stack(rhs_off),
-            } => fixed.extend(vec![
+            Instr::Cmp { lhs: l, rhs: r } if is_memory(&l) || is_memory(&r) => fixed.extend(vec![
                 Instr::Mov {
-                    src: Operand::Stack(lhs_off),
+                    src: l,
                     dst: Operand::Reg(Register::R10),
                 },
                 Instr::Cmp {
                     lhs: Operand::Reg(Register::R10),
-                    rhs: Operand::Stack(rhs_off),
+                    rhs: r,
                 },
             ]),
             i => fixed.push(i),

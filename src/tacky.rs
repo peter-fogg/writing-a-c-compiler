@@ -1,7 +1,10 @@
+use std::collections::HashMap;
+
 use crate::parser::{
     BinaryOperator, BlockItem, CaseInfo, CompoundOperator, Crement, Declaration, Expression,
     Fixity, ForInit, Function, Statement, UnaryOperator, Var,
 };
+use crate::semantic_analysis::{Attrs, InitValue, Type};
 
 #[derive(Debug, PartialEq, Clone, Copy)]
 pub enum UnaryOp {
@@ -74,45 +77,94 @@ pub enum Instr {
 }
 
 #[derive(Debug, PartialEq, Clone)]
-pub struct TackyFunction {
-    pub name: String,
-    pub params: Vec<String>,
-    pub instructions: Vec<Instr>,
+pub enum TopLevel {
+    TackyFunction {
+        name: String,
+        params: Vec<String>,
+        instructions: Vec<Instr>,
+        global: bool,
+    },
+    StaticVar {
+        name: String,
+        global: bool,
+        init: i32,
+    },
 }
+use TopLevel::*;
 
-pub type Tacky = Vec<TackyFunction>;
+pub type Tacky = Vec<TopLevel>;
 
-struct TackifyState {
+struct TackifyState<'a> {
     count: u8,
+    symbols: &'a HashMap<String, (Type, Attrs)>,
 }
 
-pub fn emit_tacky(functions: Vec<Function>) -> Tacky {
+pub fn emit_tacky(
+    declarations: Vec<Declaration>,
+    symbols: &HashMap<String, (Type, Attrs)>,
+) -> Tacky {
     let mut program = Vec::new();
 
-    let mut tackify_state = TackifyState::new();
+    let mut tackify_state = TackifyState::new(symbols);
 
-    for function in functions {
-        tackify_state.tackify_function(function, &mut program);
+    for declaration in declarations {
+        match declaration {
+            Declaration::Func(function) => tackify_state.tackify_function(function, &mut program),
+            Declaration::Var(_) => (),
+        }
     }
+
+    tackify_state.tackify_symbols(&mut program);
 
     program
 }
 
-impl TackifyState {
-    pub fn new() -> Self {
-        Self { count: 0 }
+impl<'a> TackifyState<'a> {
+    pub fn new(symbols: &'a HashMap<String, (Type, Attrs)>) -> Self {
+        Self { count: 0, symbols }
     }
 
-    fn tackify_function(&mut self, Function { name, params, body }: Function, program: &mut Tacky) {
+    fn tackify_symbols(&mut self, program: &mut Tacky) {
+        for (name, (_, attrs)) in self.symbols.iter() {
+            if let Attrs::Static { init, global } = attrs {
+                match init {
+                    InitValue::Initial(n) => program.push(StaticVar {
+                        name: name.to_string(),
+                        global: *global,
+                        init: *n,
+                    }),
+                    InitValue::Tentative => program.push(StaticVar {
+                        name: name.to_string(),
+                        global: *global,
+                        init: 0,
+                    }),
+                    InitValue::NoInit => (),
+                }
+            }
+        }
+    }
+
+    fn tackify_function(
+        &mut self,
+        Function {
+            name, params, body, ..
+        }: Function,
+        program: &mut Tacky,
+    ) {
         if let Some(body) = body {
             let mut instructions = Vec::new();
             let name = name.clone();
             self.tackify_block(body, &mut instructions);
             instructions.push(Instr::Return(Val::Constant(0)));
+            let global = match self.symbols.get(&name) {
+                Some((_, Attrs::Fun { global, .. })) => *global,
+                _ => false,
+            };
             program.push(TackyFunction {
                 name,
-                params: params,
+                params,
                 instructions,
+                global,
             });
         }
     }
@@ -128,7 +180,11 @@ impl TackifyState {
 
     fn tackify_declaration(&mut self, decl: Declaration, instrs: &mut Vec<Instr>) {
         match decl {
-            Declaration::Var(Var { name, init }) => {
+            Declaration::Var(Var {
+                name,
+                init,
+                storage: None,
+            }) => {
                 if let Some(expr) = init {
                     let expr = self.tackify_expr(expr, instrs);
                     instrs.push(Instr::Copy {
@@ -137,7 +193,7 @@ impl TackifyState {
                     });
                 }
             }
-            //Declaration::Func(function) => self.tackify_function(function, instrs),
+            Declaration::Var(_) => (),
             Declaration::Func(_) => (),
         }
     }

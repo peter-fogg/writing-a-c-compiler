@@ -57,6 +57,8 @@ pub enum Token<'a> {
     Case,
     Default,
     Comma,
+    Static,
+    Extern,
 }
 
 #[derive(Debug)]
@@ -109,6 +111,8 @@ impl<'a> Lexer<'a> {
             "switch" => Token::Switch,
             "case" => Token::Case,
             "default" => Token::Default,
+            "static" => Token::Static,
+            "extern" => Token::Extern,
             _ => Token::Id(id),
         }
     }

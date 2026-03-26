@@ -49,7 +49,7 @@ fn main() {
     }
 }
 
-fn compile_file(text: String, assembly_path: &path::Path, rest_args: &Vec<String>) {
+fn compile_file(text: String, assembly_path: &path::Path, rest_args: &[String]) {
     let lexed = lexer::Lexer::new(&text);
     if rest_args.iter().any(|s| s == "--lex") {
         println!("{:?}", lexed.collect::<Vec<_>>());
@@ -60,17 +60,17 @@ fn compile_file(text: String, assembly_path: &path::Path, rest_args: &Vec<String
         println!("{:?}", parsed);
         std::process::exit(0);
     }
-    let analyzed = analyze(parsed);
+    let (analyzed, symbols) = analyze(parsed);
     if rest_args.iter().any(|s| s == "--validate") {
         println!("{:?}", analyzed);
         std::process::exit(0);
     }
-    let tackified = tacky::emit_tacky(analyzed);
+    let tackified = tacky::emit_tacky(analyzed, &symbols);
     if rest_args.iter().any(|s| s == "--tacky") {
         println!("{:?}", tackified);
         std::process::exit(0);
     }
-    let assembled = codegen::assemble(tackified);
+    let assembled = codegen::assemble(tackified, &symbols);
     if rest_args.iter().any(|s| s == "--codegen") {
         println!("{:?}", assembled);
         std::process::exit(0);
