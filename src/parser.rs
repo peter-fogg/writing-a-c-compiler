@@ -545,7 +545,9 @@ impl<'a> Parser<'a> {
             .current
             .unwrap_or_else(|| panic!("Ran out of tokens while parsing expression"));
 
-        while (Self::is_binary_op(&next) || Self::is_compound_op(&next))
+        while (Self::is_binary_op(&next)
+            || Self::is_compound_op(&next)
+            || Self::is_postfix_op(&next))
             && Self::get_prec(next) >= prec
         {
             let next_prec = Self::get_prec(next);
@@ -564,26 +566,22 @@ impl<'a> Parser<'a> {
                 let compound_op = self.compound_op();
                 let rhs = self.expression(next_prec);
                 lhs = Expression::Compound(compound_op, Box::new(lhs), Box::new(rhs));
+            } else if Self::is_postfix_op(&next) {
+                match next {
+                    Token::DoublePlus => {
+                        self.consume(Token::DoublePlus);
+                        lhs = Expression::Crement(Fixity::Post, Crement::Inc, Box::new(lhs));
+                    }
+                    Token::DoubleMinus => {
+                        self.consume(Token::DoubleMinus);
+                        lhs = Expression::Crement(Fixity::Post, Crement::Dec, Box::new(lhs));
+                    }
+                    _ => (),
+                }
             } else {
                 let binop = self.binary_op();
                 let rhs = self.expression(Self::increment_prec(&next_prec));
                 lhs = Expression::Binary(binop, Box::new(lhs), Box::new(rhs));
-            }
-            next = self
-                .current
-                .unwrap_or_else(|| panic!("Ran out of tokens while parsing expression"));
-        }
-        while Self::is_postfix_op(&next) {
-            match next {
-                Token::DoublePlus => {
-                    self.consume(Token::DoublePlus);
-                    lhs = Expression::Crement(Fixity::Post, Crement::Inc, Box::new(lhs));
-                }
-                Token::DoubleMinus => {
-                    self.consume(Token::DoubleMinus);
-                    lhs = Expression::Crement(Fixity::Post, Crement::Dec, Box::new(lhs));
-                }
-                _ => (),
             }
             next = self
                 .current
