@@ -1,5 +1,6 @@
 #[derive(Debug, PartialEq, Clone, Copy)]
-pub enum Token<'a> {
+pub enum TokenKind<'a> {
+    Eof,
     Id(&'a str),
     Void,
     Int,
@@ -61,6 +62,13 @@ pub enum Token<'a> {
     Extern,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct Token<'a> {
+    pub kind: TokenKind<'a>,
+    pub start: usize,
+    pub end: usize,
+}
+
 #[derive(Debug)]
 pub struct Lexer<'a> {
     source: &'a str,
@@ -82,7 +90,11 @@ impl<'a> Lexer<'a> {
             self.position += 1;
         }
 
-        Token::Constant(self.source.get(start_index..self.position).unwrap())
+        Token {
+            kind: TokenKind::Constant(self.source.get(start_index..self.position).unwrap()),
+            start: start_index,
+            end: self.position,
+        }
     }
 
     pub fn identifier(&mut self) -> Token<'a> {
@@ -96,24 +108,30 @@ impl<'a> Lexer<'a> {
 
         let id = self.source.get(start_index..self.position).unwrap();
 
-        match id {
-            "return" => Token::Return,
-            "int" => Token::Int,
-            "void" => Token::Void,
-            "if" => Token::If,
-            "else" => Token::Else,
-            "goto" => Token::Goto,
-            "do" => Token::Do,
-            "while" => Token::While,
-            "for" => Token::For,
-            "break" => Token::Break,
-            "continue" => Token::Continue,
-            "switch" => Token::Switch,
-            "case" => Token::Case,
-            "default" => Token::Default,
-            "static" => Token::Static,
-            "extern" => Token::Extern,
-            _ => Token::Id(id),
+        let kind = match id {
+            "return" => TokenKind::Return,
+            "int" => TokenKind::Int,
+            "void" => TokenKind::Void,
+            "if" => TokenKind::If,
+            "else" => TokenKind::Else,
+            "goto" => TokenKind::Goto,
+            "do" => TokenKind::Do,
+            "while" => TokenKind::While,
+            "for" => TokenKind::For,
+            "break" => TokenKind::Break,
+            "continue" => TokenKind::Continue,
+            "switch" => TokenKind::Switch,
+            "case" => TokenKind::Case,
+            "default" => TokenKind::Default,
+            "static" => TokenKind::Static,
+            "extern" => TokenKind::Extern,
+            _ => TokenKind::Id(id),
+        };
+
+        Token {
+            kind,
+            start: start_index,
+            end: self.position,
         }
     }
 
@@ -149,16 +167,22 @@ impl<'a> Lexer<'a> {
     pub fn check_next_char(
         &mut self,
         next_char: &'static str,
-        present: Token<'a>,
-        absent: Token<'a>,
+        present: TokenKind<'a>,
+        absent: TokenKind<'a>,
+        start: usize,
     ) -> Token<'a> {
-        if let Some(c) = self.peek()
+        let kind = if let Some(c) = self.peek()
             && c == next_char
         {
             self.next_char();
             present
         } else {
             absent
+        };
+        Token {
+            kind,
+            start,
+            end: self.position,
         }
     }
 }
@@ -167,6 +191,7 @@ impl<'a> Iterator for Lexer<'a> {
     type Item = Token<'a>;
 
     fn next(&mut self) -> Option<Self::Item> {
+        let start = self.position;
         loop {
             let c = self.next_char()?;
 
@@ -189,9 +214,18 @@ impl<'a> Iterator for Lexer<'a> {
                 "-" => {
                     if let Some("-") = self.peek() {
                         self.next_char();
-                        return Some(Token::DoubleMinus);
+                        return Some(Token {
+                            kind: TokenKind::DoubleMinus,
+                            start,
+                            end: self.position,
+                        });
                     } else {
-                        return Some(self.check_next_char("=", Token::MinusEquals, Token::Minus));
+                        return Some(self.check_next_char(
+                            "=",
+                            TokenKind::MinusEquals,
+                            TokenKind::Minus,
+                            start,
+                        ));
                     }
                 }
                 "<" => {
@@ -199,11 +233,17 @@ impl<'a> Iterator for Lexer<'a> {
                         self.next_char();
                         return Some(self.check_next_char(
                             "=",
-                            Token::DoubleLAngleEquals,
-                            Token::DoubleLAngle,
+                            TokenKind::DoubleLAngleEquals,
+                            TokenKind::DoubleLAngle,
+                            start,
                         ));
                     } else {
-                        return Some(self.check_next_char("=", Token::LAngleEquals, Token::LAngle));
+                        return Some(self.check_next_char(
+                            "=",
+                            TokenKind::LAngleEquals,
+                            TokenKind::LAngle,
+                            start,
+                        ));
                     }
                 }
                 ">" => {
@@ -211,62 +251,181 @@ impl<'a> Iterator for Lexer<'a> {
                         self.next_char();
                         return Some(self.check_next_char(
                             "=",
-                            Token::DoubleRAngleEquals,
-                            Token::DoubleRAngle,
+                            TokenKind::DoubleRAngleEquals,
+                            TokenKind::DoubleRAngle,
+                            start,
                         ));
                     } else {
-                        return Some(self.check_next_char("=", Token::RAngleEquals, Token::RAngle));
+                        return Some(self.check_next_char(
+                            "=",
+                            TokenKind::RAngleEquals,
+                            TokenKind::RAngle,
+                            start,
+                        ));
                     }
                 }
                 "&" => {
                     if let Some("&") = self.peek() {
                         self.next_char();
-                        return Some(Token::DoubleAmpersand);
+                        return Some(Token {
+                            kind: TokenKind::DoubleAmpersand,
+                            start,
+                            end: self.position,
+                        });
                     } else {
                         return Some(self.check_next_char(
                             "=",
-                            Token::AmpersandEquals,
-                            Token::Ampersand,
+                            TokenKind::AmpersandEquals,
+                            TokenKind::Ampersand,
+                            start,
                         ));
                     }
                 }
                 "|" => {
                     if let Some("|") = self.peek() {
                         self.next_char();
-                        return Some(Token::DoublePipe);
+                        return Some(Token {
+                            kind: TokenKind::DoublePipe,
+                            start,
+                            end: self.position,
+                        });
                     } else {
-                        return Some(self.check_next_char("=", Token::PipeEquals, Token::Pipe));
+                        return Some(self.check_next_char(
+                            "=",
+                            TokenKind::PipeEquals,
+                            TokenKind::Pipe,
+                            start,
+                        ));
                     }
                 }
                 "=" => {
-                    return Some(self.check_next_char("=", Token::DoubleEquals, Token::Equals));
+                    return Some(self.check_next_char(
+                        "=",
+                        TokenKind::DoubleEquals,
+                        TokenKind::Equals,
+                        start,
+                    ));
                 }
                 "!" => {
-                    return Some(self.check_next_char("=", Token::BangEquals, Token::Bang));
+                    return Some(self.check_next_char(
+                        "=",
+                        TokenKind::BangEquals,
+                        TokenKind::Bang,
+                        start,
+                    ));
                 }
-                "~" => return Some(Token::Tilde),
-                "(" => return Some(Token::LParen),
-                ")" => return Some(Token::RParen),
-                "{" => return Some(Token::LBrace),
-                "}" => return Some(Token::RBrace),
-                ";" => return Some(Token::Semicolon),
+                "~" => {
+                    return Some(Token {
+                        kind: TokenKind::Tilde,
+                        start,
+                        end: self.position,
+                    });
+                }
+                "(" => {
+                    return Some(Token {
+                        kind: TokenKind::LParen,
+                        start,
+                        end: self.position,
+                    });
+                }
+                ")" => {
+                    return Some(Token {
+                        kind: TokenKind::RParen,
+                        start,
+                        end: self.position,
+                    });
+                }
+                "{" => {
+                    return Some(Token {
+                        kind: TokenKind::LBrace,
+                        start,
+                        end: self.position,
+                    });
+                }
+                "}" => {
+                    return Some(Token {
+                        kind: TokenKind::RBrace,
+                        start,
+                        end: self.position,
+                    });
+                }
+                ";" => {
+                    return Some(Token {
+                        kind: TokenKind::Semicolon,
+                        start,
+                        end: self.position,
+                    });
+                }
                 "+" => {
                     if let Some("+") = self.peek() {
                         self.next_char();
-                        return Some(Token::DoublePlus);
+                        return Some(Token {
+                            kind: TokenKind::DoublePlus,
+                            start,
+                            end: self.position,
+                        });
                     } else {
-                        return Some(self.check_next_char("=", Token::PlusEquals, Token::Plus));
+                        return Some(self.check_next_char(
+                            "=",
+                            TokenKind::PlusEquals,
+                            TokenKind::Plus,
+                            start,
+                        ));
                     }
                 }
-                "/" => return Some(self.check_next_char("=", Token::SlashEquals, Token::Slash)),
-                "%" => {
-                    return Some(self.check_next_char("=", Token::PercentEquals, Token::Percent));
+                "/" => {
+                    return Some(self.check_next_char(
+                        "=",
+                        TokenKind::SlashEquals,
+                        TokenKind::Slash,
+                        start,
+                    ));
                 }
-                "*" => return Some(self.check_next_char("=", Token::StarEquals, Token::Star)),
-                "^" => return Some(self.check_next_char("=", Token::CaretEquals, Token::Caret)),
-                "?" => return Some(Token::Huh),
-                ":" => return Some(Token::Colon),
-                "," => return Some(Token::Comma),
+                "%" => {
+                    return Some(self.check_next_char(
+                        "=",
+                        TokenKind::PercentEquals,
+                        TokenKind::Percent,
+                        start,
+                    ));
+                }
+                "*" => {
+                    return Some(self.check_next_char(
+                        "=",
+                        TokenKind::StarEquals,
+                        TokenKind::Star,
+                        start,
+                    ));
+                }
+                "^" => {
+                    return Some(self.check_next_char(
+                        "=",
+                        TokenKind::CaretEquals,
+                        TokenKind::Caret,
+                        start,
+                    ));
+                }
+                "?" => {
+                    return Some(Token {
+                        kind: TokenKind::Huh,
+                        start,
+                        end: self.position,
+                    });
+                }
+                ":" => {
+                    return Some(Token {
+                        kind: TokenKind::Colon,
+                        start,
+                        end: self.position,
+                    });
+                }
+                "," => {
+                    return Some(Token {
+                        kind: TokenKind::Comma,
+                        start,
+                        end: self.position,
+                    });
+                }
                 c => panic!("Bad token {}", c),
             };
         }
@@ -276,7 +435,7 @@ impl<'a> Iterator for Lexer<'a> {
 #[cfg(test)]
 mod test {
     use super::*;
-    use Token::*;
+    use TokenKind::*;
 
     #[test]
     fn whitespace() {
