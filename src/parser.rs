@@ -168,6 +168,7 @@ enum Prec {
 
 pub struct Parser<'a> {
     tokens: Lexer<'a>,
+    last_token: Option<Token<'a>>,
     current_token: Option<Token<'a>>,
     next_token: Option<Token<'a>>,
 }
@@ -179,6 +180,7 @@ impl<'a> Parser<'a> {
         let current_token = tokens.next();
         let next_token = tokens.next();
         Self {
+            last_token: None,
             tokens,
             current_token,
             next_token,
@@ -186,34 +188,32 @@ impl<'a> Parser<'a> {
     }
 
     pub fn advance(&mut self) -> Token<'a> {
+        self.last_token = self.current_token;
         self.current_token = self.next_token;
         self.next_token = self.tokens.next();
-        self.current_token.unwrap_or(Token {
-            kind: TokenKind::Eof,
-            start: 0,
-            end: 0,
-        })
+        self.current_token.unwrap_or(Self::eof_token())
     }
 
-    pub fn current(&mut self) -> Token<'a> {
+    pub fn current(&self) -> Token<'a> {
         match self.current_token {
-            None => Token {
-                kind: TokenKind::Eof,
-                start: 0,
-                end: 0,
-            },
+            None => Self::eof_token(),
             Some(t) => t,
         }
     }
 
     pub fn next(&mut self) -> Token<'a> {
         match self.next_token {
-            None => Token {
-                kind: TokenKind::Eof,
-                start: 0,
-                end: 0,
-            },
+            None => Self::eof_token(),
             Some(t) => t,
+        }
+    }
+
+    fn eof_token() -> Token<'a> {
+        Token {
+            kind: TokenKind::Eof,
+            start: 0,
+            end: 0,
+            line: 0,
         }
     }
 
@@ -222,7 +222,7 @@ impl<'a> Parser<'a> {
             t if t.kind == kind => {
                 self.advance();
             }
-            t => panic!("Expected {:?}, got {:?}", kind, t),
+            t => self.report_error(format!("Expected {:?}, got {:?}", kind, t.kind)),
         }
     }
 
@@ -255,7 +255,7 @@ impl<'a> Parser<'a> {
                 self.advance();
                 id.to_string()
             }
-            t => panic!("Expected identifier, got {:?}", t),
+            t => self.report_error(format!("Expected identifier, got {:?}", t)),
         }
     }
 
@@ -266,7 +266,7 @@ impl<'a> Parser<'a> {
             self.advance();
         }
 
-        let storage = Self::storage_class(storage_and_type);
+        let storage = self.storage_class(storage_and_type);
         if self.next().kind == TokenKind::LParen {
             Declaration::Func(self.func_declaration(storage))
         } else {
@@ -302,7 +302,7 @@ impl<'a> Parser<'a> {
                 Some(self.expression(Prec::Bottom))
             }
             TokenKind::Semicolon => None,
-            kind => panic!("Expected assignment or ;, got {:?}", kind),
+            kind => self.report_error(format!("Expected assignment or ;, got {:?}", kind)),
         };
 
         self.consume(TokenKind::Semicolon);
@@ -313,26 +313,26 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn storage_class(specifiers: Vec<Token>) -> Option<StorageClass> {
+    fn storage_class(&self, specifiers: Vec<Token>) -> Option<StorageClass> {
         let mut storage_classes = vec![];
         let mut has_type = false;
         for specifier in specifiers {
             match specifier.kind {
                 TokenKind::Int => has_type = true,
                 TokenKind::Static | TokenKind::Extern => storage_classes.push(specifier.kind),
-                _ => panic!("Bad declaration specifier {:?}", specifier),
+                _ => self.report_error(format!("Bad declaration specifier {:?}", specifier)),
             }
         }
 
         if !has_type {
-            panic!("Missing type specifier");
+            self.report_error("Missing type specifier".to_string());
         }
 
         match &storage_classes[..] {
             [] => None,
             [TokenKind::Extern] => Some(StorageClass::Extern),
             [TokenKind::Static] => Some(StorageClass::Static),
-            l => panic!("Too many storage classes {:?}", l),
+            l => self.report_error(format!("Too many storage classes {:?}", l)),
         }
     }
 
@@ -364,7 +364,7 @@ impl<'a> Parser<'a> {
             Token {
                 kind: TokenKind::Eof,
                 ..
-            } => panic!("Unexpected end of input parsing block item"),
+            } => self.report_error("Unexpected end of input parsing block item".to_string()),
             _ => BlockItem::S(self.statement()),
         }
     }
@@ -413,7 +413,9 @@ impl<'a> Parser<'a> {
                         self.consume(TokenKind::Semicolon);
                         Statement::Goto(id.to_string())
                     }
-                    kind => panic!("Expected identifier after goto, got {:?}", kind),
+                    kind => {
+                        self.report_error(format!("Expected identifier after goto, got {:?}", kind))
+                    }
                 }
             }
             TokenKind::LBrace => Statement::Compound(self.block()),
@@ -452,7 +454,9 @@ impl<'a> Parser<'a> {
                 self.consume(TokenKind::LParen);
                 let init = match self.current() {
                     t if Self::is_specifier(t) => match self.declaration() {
-                        Declaration::Func(_) => panic!("Function declaration in for loop init"),
+                        Declaration::Func(_) => {
+                            self.report_error("Function declaration in for loop init".to_string())
+                        }
                         Declaration::Var(var) => ForInit::Decl(var),
                     },
                     Token {
@@ -514,7 +518,9 @@ impl<'a> Parser<'a> {
                 let stmt = self.statement();
                 Statement::Default(UNLABELLED.to_string(), Box::new(stmt))
             }
-            TokenKind::Eof => panic!("Unexpected end of input parsing statement"),
+            TokenKind::Eof => {
+                self.report_error("Unexpected end of input parsing statement".to_string())
+            }
             _ => {
                 let expr = Statement::Exp(self.expression(Prec::Bottom));
                 self.consume(TokenKind::Semicolon);
@@ -526,12 +532,12 @@ impl<'a> Parser<'a> {
     fn constant(&mut self) -> Expression {
         let n_str = match self.current().kind {
             TokenKind::Constant(n_str) => n_str,
-            err => panic!("bad numeric parse: {:?}", err),
+            err => self.report_error(format!("bad numeric parse: {:?}", err)),
         };
 
         let n = match n_str.parse::<i32>() {
             Ok(n) => n,
-            err => panic!("bad numeric parse: {:?}", err),
+            err => self.report_error(format!("bad numeric parse: {:?}", err)),
         };
         self.advance();
         Expression::Constant(n)
@@ -733,13 +739,15 @@ impl<'a> Parser<'a> {
                 let inner_expr = self.factor();
                 Expression::Crement(Fixity::Pre, crement, Box::new(inner_expr))
             }
-            t => panic!("Unexpected token {:?}", t),
+            t => self.report_error(format!("Unexpected token {:?}", t)),
         }
     }
 
     fn compound_op(&mut self) -> CompoundOperator {
         let compound = match self.current().kind {
-            TokenKind::Eof => panic!("Ran out of tokens while parsing expression"),
+            TokenKind::Eof => {
+                self.report_error("Ran out of tokens while parsing expression".to_string())
+            }
             TokenKind::PlusEquals => CompoundOperator::Add,
             TokenKind::MinusEquals => CompoundOperator::Subtract,
             TokenKind::StarEquals => CompoundOperator::Multiply,
@@ -750,7 +758,7 @@ impl<'a> Parser<'a> {
             TokenKind::CaretEquals => CompoundOperator::BitXOr,
             TokenKind::DoubleLAngleEquals => CompoundOperator::ShiftLeft,
             TokenKind::DoubleRAngleEquals => CompoundOperator::ShiftRight,
-            kind => panic!("Expected compound operator, got {:?}", kind),
+            kind => self.report_error(format!("Expected compound operator, got {:?}", kind)),
         };
         self.advance();
         compound
@@ -758,7 +766,9 @@ impl<'a> Parser<'a> {
 
     fn binary_op(&mut self) -> BinaryOperator {
         let binop = match self.current().kind {
-            TokenKind::Eof => panic!("Ran out of tokens while parsing expression"),
+            TokenKind::Eof => {
+                self.report_error("Ran out of tokens while parsing expression".to_string())
+            }
             TokenKind::Plus => BinaryOperator::Add,
             TokenKind::Minus => BinaryOperator::Subtract,
             TokenKind::Star => BinaryOperator::Multiply,
@@ -778,7 +788,7 @@ impl<'a> Parser<'a> {
             TokenKind::LAngle => BinaryOperator::Less,
             TokenKind::LAngleEquals => BinaryOperator::LessOrEqual,
             TokenKind::Huh => BinaryOperator::Conditional,
-            kind => panic!("Expected binary operator, got {:?}", kind),
+            kind => self.report_error(format!("Expected binary operator, got {:?}", kind)),
         };
         self.advance();
         binop
@@ -789,7 +799,7 @@ impl<'a> Parser<'a> {
             TokenKind::Tilde => UnaryOperator::Complement,
             TokenKind::Minus => UnaryOperator::Negate,
             TokenKind::Bang => UnaryOperator::Not,
-            _ => panic!("unreachable"),
+            _ => unreachable!(),
         };
         self.advance();
         unop
@@ -800,5 +810,53 @@ impl<'a> Parser<'a> {
             t.kind,
             TokenKind::Int | TokenKind::Extern | TokenKind::Static
         )
+    }
+
+    fn report_error(&self, message: String) -> ! {
+        let last_token = self.last_token.unwrap();
+        let line = last_token.line;
+        eprintln!("Error [line {}]: {}", line, message);
+        eprintln!("Error seems to be around here...");
+        self.print_enclosing_lines(last_token.start, self.current_token.unwrap().end);
+        panic!("Aborting due to error")
+    }
+
+    fn print_enclosing_lines(&self, error_start: usize, error_end: usize) {
+        let mut line_start = error_start;
+        while self.tokens.source.get(line_start..line_start + 1) != Some("\n") {
+            line_start -= 1;
+        }
+        line_start += 1;
+
+        let start_offset = error_start.checked_sub(line_start).unwrap_or(0);
+
+        let mut line_end = error_end;
+        while self.tokens.source.get(line_end..line_end + 1) != Some("\n") {
+            line_end += 1;
+        }
+        let end_offset = line_end.checked_sub(error_end).unwrap_or(0);
+
+        let mut error_lines = self
+            .tokens
+            .source
+            .get(line_start..line_end)
+            .unwrap()
+            .lines();
+
+        let first_line = error_lines.next().unwrap();
+        eprintln!("{}", first_line);
+        eprintln!(
+            "{}{}",
+            str::repeat(" ", start_offset),
+            str::repeat("^", first_line.len() - start_offset)
+        );
+        if let Some(next_line) = error_lines.next() {
+            eprintln!("{}", next_line);
+            eprintln!(
+                "{}{}",
+                str::repeat("^", next_line.len() - end_offset),
+                str::repeat(" ", end_offset)
+            );
+        }
     }
 }

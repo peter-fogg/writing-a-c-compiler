@@ -67,12 +67,14 @@ pub struct Token<'a> {
     pub kind: TokenKind<'a>,
     pub start: usize,
     pub end: usize,
+    pub line: u16,
 }
 
 #[derive(Debug)]
 pub struct Lexer<'a> {
-    source: &'a str,
+    pub source: &'a str,
     position: usize,
+    line: u16,
 }
 
 impl<'a> Lexer<'a> {
@@ -80,6 +82,7 @@ impl<'a> Lexer<'a> {
         Lexer {
             source,
             position: 0,
+            line: 0,
         }
     }
 
@@ -94,6 +97,7 @@ impl<'a> Lexer<'a> {
             kind: TokenKind::Constant(self.source.get(start_index..self.position).unwrap()),
             start: start_index,
             end: self.position,
+            line: self.line,
         }
     }
 
@@ -132,6 +136,7 @@ impl<'a> Lexer<'a> {
             kind,
             start: start_index,
             end: self.position,
+            line: self.line,
         }
     }
 
@@ -183,6 +188,7 @@ impl<'a> Lexer<'a> {
             kind,
             start,
             end: self.position,
+            line: self.line,
         }
     }
 }
@@ -196,6 +202,10 @@ impl<'a> Iterator for Lexer<'a> {
             let c = self.next_char()?;
 
             match c {
+                "\n" => {
+                    self.line += 1;
+                    continue;
+                }
                 c if Self::is_whitespace(c) => {
                     continue;
                 }
@@ -218,6 +228,7 @@ impl<'a> Iterator for Lexer<'a> {
                             kind: TokenKind::DoubleMinus,
                             start,
                             end: self.position,
+                            line: self.line,
                         });
                     } else {
                         return Some(self.check_next_char(
@@ -271,6 +282,7 @@ impl<'a> Iterator for Lexer<'a> {
                             kind: TokenKind::DoubleAmpersand,
                             start,
                             end: self.position,
+                            line: self.line,
                         });
                     } else {
                         return Some(self.check_next_char(
@@ -288,6 +300,7 @@ impl<'a> Iterator for Lexer<'a> {
                             kind: TokenKind::DoublePipe,
                             start,
                             end: self.position,
+                            line: self.line,
                         });
                     } else {
                         return Some(self.check_next_char(
@@ -319,6 +332,7 @@ impl<'a> Iterator for Lexer<'a> {
                         kind: TokenKind::Tilde,
                         start,
                         end: self.position,
+                        line: self.line,
                     });
                 }
                 "(" => {
@@ -326,6 +340,7 @@ impl<'a> Iterator for Lexer<'a> {
                         kind: TokenKind::LParen,
                         start,
                         end: self.position,
+                        line: self.line,
                     });
                 }
                 ")" => {
@@ -333,6 +348,7 @@ impl<'a> Iterator for Lexer<'a> {
                         kind: TokenKind::RParen,
                         start,
                         end: self.position,
+                        line: self.line,
                     });
                 }
                 "{" => {
@@ -340,6 +356,7 @@ impl<'a> Iterator for Lexer<'a> {
                         kind: TokenKind::LBrace,
                         start,
                         end: self.position,
+                        line: self.line,
                     });
                 }
                 "}" => {
@@ -347,6 +364,7 @@ impl<'a> Iterator for Lexer<'a> {
                         kind: TokenKind::RBrace,
                         start,
                         end: self.position,
+                        line: self.line,
                     });
                 }
                 ";" => {
@@ -354,6 +372,7 @@ impl<'a> Iterator for Lexer<'a> {
                         kind: TokenKind::Semicolon,
                         start,
                         end: self.position,
+                        line: self.line,
                     });
                 }
                 "+" => {
@@ -363,6 +382,7 @@ impl<'a> Iterator for Lexer<'a> {
                             kind: TokenKind::DoublePlus,
                             start,
                             end: self.position,
+                            line: self.line,
                         });
                     } else {
                         return Some(self.check_next_char(
@@ -410,6 +430,7 @@ impl<'a> Iterator for Lexer<'a> {
                         kind: TokenKind::Huh,
                         start,
                         end: self.position,
+                        line: self.line,
                     });
                 }
                 ":" => {
@@ -417,6 +438,7 @@ impl<'a> Iterator for Lexer<'a> {
                         kind: TokenKind::Colon,
                         start,
                         end: self.position,
+                        line: self.line,
                     });
                 }
                 "," => {
@@ -424,6 +446,7 @@ impl<'a> Iterator for Lexer<'a> {
                         kind: TokenKind::Comma,
                         start,
                         end: self.position,
+                        line: self.line,
                     });
                 }
                 c => panic!("Bad token {}", c),
