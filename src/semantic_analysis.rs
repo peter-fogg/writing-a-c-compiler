@@ -1,7 +1,8 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::parser::{
-    BlockItem, CaseInfo, Declaration, Expression, ForInit, Function, Statement, StorageClass, Var,
+    BlockItem, CaseInfo, Declaration, Expression, ForInit, Function, Program, Statement,
+    StorageClass, Var,
 };
 
 #[derive(PartialEq, Eq, Debug, Copy, Clone)]
@@ -340,9 +341,8 @@ impl ResolveState {
     }
 }
 
-pub fn analyze(
-    declarations: Vec<Declaration>,
-) -> (Vec<Declaration>, HashMap<String, (Type, Attrs)>) {
+pub fn analyze(program: Program) -> (Program, HashMap<String, (Type, Attrs)>) {
+    let declarations = program.0;
     let mut analyzed = Vec::with_capacity(declarations.len());
     let mut resolve_state = ResolveState {
         env: vec![HashMap::new()],
@@ -377,7 +377,7 @@ pub fn analyze(
 
     let symbols = TypeChecker::check_program(&analyzed);
 
-    (analyzed, symbols)
+    (Program(analyzed), symbols)
 }
 
 fn check_labels(Function { body, .. }: &Function) {

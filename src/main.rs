@@ -7,6 +7,7 @@ mod codegen;
 mod emit;
 mod lexer;
 mod parser;
+mod pretty;
 mod semantic_analysis;
 mod tacky;
 
@@ -57,12 +58,12 @@ fn compile_file(text: String, assembly_path: &path::Path, rest_args: &[String]) 
     }
     let parsed = Parser::new(lexed).parse();
     if rest_args.iter().any(|s| s == "--parse") {
-        println!("{:?}", parsed);
+        println!("{:?}", pretty::print_program(&parsed));
         std::process::exit(0);
     }
     let (analyzed, symbols) = analyze(parsed);
     if rest_args.iter().any(|s| s == "--validate") {
-        println!("{:?}", analyzed);
+        println!("{:?}", analyzed.0);
         std::process::exit(0);
     }
     let tackified = tacky::emit_tacky(analyzed, &symbols);

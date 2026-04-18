@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use crate::parser::{
     BinaryOperator, BlockItem, CaseInfo, CompoundOperator, Crement, Declaration, Expression,
-    Fixity, ForInit, Function, Statement, UnaryOperator, Var,
+    Fixity, ForInit, Function, Program, Statement, UnaryOperator, Var,
 };
 use crate::semantic_analysis::{Attrs, InitValue, Type};
 
@@ -99,24 +99,24 @@ struct TackifyState<'a> {
     symbols: &'a HashMap<String, (Type, Attrs)>,
 }
 
-pub fn emit_tacky(
-    declarations: Vec<Declaration>,
-    symbols: &HashMap<String, (Type, Attrs)>,
-) -> Tacky {
-    let mut program = Vec::new();
+pub fn emit_tacky(program: Program, symbols: &HashMap<String, (Type, Attrs)>) -> Tacky {
+    let declarations = program.0;
+    let mut program_tacky = Vec::new();
 
     let mut tackify_state = TackifyState::new(symbols);
 
     for declaration in declarations {
         match declaration {
-            Declaration::Func(function) => tackify_state.tackify_function(function, &mut program),
+            Declaration::Func(function) => {
+                tackify_state.tackify_function(function, &mut program_tacky)
+            }
             Declaration::Var(_) => (),
         }
     }
 
-    tackify_state.tackify_symbols(&mut program);
+    tackify_state.tackify_symbols(&mut program_tacky);
 
-    program
+    program_tacky
 }
 
 impl<'a> TackifyState<'a> {

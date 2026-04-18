@@ -166,6 +166,8 @@ enum Prec {
     Top,
 }
 
+pub struct Program(pub Vec<Declaration>);
+
 pub struct Parser<'a> {
     tokens: Lexer<'a>,
     last_token: Option<Token<'a>>,
@@ -226,13 +228,13 @@ impl<'a> Parser<'a> {
         }
     }
 
-    pub fn parse(&mut self) -> Vec<Declaration> {
+    pub fn parse(&mut self) -> Program {
         let mut decls = vec![];
         while self.current().kind != TokenKind::Eof {
             decls.push(self.declaration())
         }
 
-        decls
+        Program(decls)
     }
 
     fn block(&mut self) -> Vec<BlockItem> {
@@ -828,13 +830,13 @@ impl<'a> Parser<'a> {
         }
         line_start += 1;
 
-        let start_offset = error_start.checked_sub(line_start).unwrap_or(0);
+        let start_offset = error_start.saturating_sub(line_start);
 
         let mut line_end = error_end;
         while self.tokens.source.get(line_end..line_end + 1) != Some("\n") {
             line_end += 1;
         }
-        let end_offset = line_end.checked_sub(error_end).unwrap_or(0);
+        let end_offset = line_end.saturating_sub(error_end);
 
         let mut error_lines = self
             .tokens
