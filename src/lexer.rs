@@ -1,5 +1,5 @@
 use std::iter::Peekable;
-use std::str::Chars;
+use std::str::CharIndices;
 
 #[derive(Debug, PartialEq, Clone, Copy)]
 pub enum TokenKind<'a> {
@@ -65,7 +65,7 @@ pub enum TokenKind<'a> {
     Extern,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, PartialEq, Copy)]
 pub struct Token<'a> {
     pub kind: TokenKind<'a>,
     pub start: usize,
@@ -76,46 +76,44 @@ pub struct Token<'a> {
 #[derive(Debug)]
 pub struct Lexer<'a> {
     pub source: &'a str,
-    position: usize,
     line: u16,
-    chars: Peekable<Chars<'a>>,
+    chars: Peekable<CharIndices<'a>>,
 }
 
 impl<'a> Lexer<'a> {
     pub fn new(source: &'a str) -> Self {
         Lexer {
             source,
-            position: 0,
             line: 0,
-            chars: source.chars().peekable(),
+            chars: source.char_indices().peekable(),
         }
     }
 
     pub fn constant(&mut self) -> Token<'a> {
-        let start_index = self.position - 1;
+        let &(mut end, mut c) = self.peek().unwrap();
+        let start = end - 1;
 
-        while Self::is_digit(*self.peek().unwrap_or(&'_')) {
-            self.next_char();
+        while Self::is_digit(c) {
+            (end, c) = self.next_char().unwrap();
         }
 
         Token {
-            kind: TokenKind::Constant(self.source.get(start_index..self.position).unwrap()),
-            start: start_index,
-            end: self.position,
+            kind: TokenKind::Constant(self.source.get(start..end).unwrap()),
+            start,
+            end,
             line: self.line,
         }
     }
 
     pub fn identifier(&mut self) -> Token<'a> {
-        let start_index = self.position - 1;
+        let &(mut end, mut c) = self.peek().unwrap();
+        let start = end - 1;
 
-        while Self::is_alpha(*self.peek().unwrap_or(&' '))
-            || Self::is_digit(*self.peek().unwrap_or(&' '))
-        {
-            self.next_char();
+        while Self::is_alpha(c) || Self::is_digit(c) {
+            (end, c) = self.next_char().unwrap();
         }
 
-        let id = self.source.get(start_index..self.position).unwrap();
+        let id = self.source.get(start..end).unwrap();
 
         let kind = match id {
             "return" => TokenKind::Return,
@@ -139,20 +137,18 @@ impl<'a> Lexer<'a> {
 
         Token {
             kind,
-            start: start_index,
-            end: self.position,
+            start,
+            end,
             line: self.line,
         }
     }
 
-    fn peek(&mut self) -> Option<&char> {
+    fn peek(&mut self) -> Option<&(usize, char)> {
         self.chars.peek()
     }
 
-    fn next_char(&mut self) -> Option<char> {
-        let c = self.chars.next();
-        self.position += 1;
-        c
+    fn next_char(&mut self) -> Option<(usize, char)> {
+        self.chars.next()
     }
 
     pub fn is_digit(c: char) -> bool {
@@ -174,18 +170,18 @@ impl<'a> Lexer<'a> {
         absent: TokenKind<'a>,
         start: usize,
     ) -> Token<'a> {
-        let kind = if let Some(c) = self.peek()
-            && *c == next_char
+        let (end, kind) = if let Some(&(_, c)) = self.peek()
+            && c == next_char
         {
             self.next_char();
-            present
+            (start + 2, present)
         } else {
-            absent
+            (start + 1, absent)
         };
         Token {
             kind,
             start,
-            end: self.position,
+            end,
             line: self.line,
         }
     }
@@ -195,9 +191,8 @@ impl<'a> Iterator for Lexer<'a> {
     type Item = Token<'a>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        let start = self.position;
         loop {
-            let c = self.next_char()?;
+            let (start, c) = self.next_char()?;
 
             match c {
                 '\n' => {
@@ -209,7 +204,7 @@ impl<'a> Iterator for Lexer<'a> {
                 }
                 c if Self::is_digit(c) => {
                     let number = self.constant();
-                    if let Some(next_c) = self.peek()
+                    if let Some((_, next_c)) = self.peek()
                         && Self::is_alpha(*next_c)
                     {
                         panic!("Bad token");
@@ -220,12 +215,12 @@ impl<'a> Iterator for Lexer<'a> {
                     return Some(self.identifier());
                 }
                 '-' => {
-                    if let Some('-') = self.peek() {
+                    if let Some(&(end, '-')) = self.peek() {
                         self.next_char();
                         return Some(Token {
                             kind: TokenKind::DoubleMinus,
                             start,
-                            end: self.position,
+                            end,
                             line: self.line,
                         });
                     } else {
@@ -238,7 +233,7 @@ impl<'a> Iterator for Lexer<'a> {
                     }
                 }
                 '<' => {
-                    if let Some('<') = self.peek() {
+                    if let Some(&(_, '<')) = self.peek() {
                         self.next_char();
                         return Some(self.check_next_char(
                             '=',
@@ -256,7 +251,7 @@ impl<'a> Iterator for Lexer<'a> {
                     }
                 }
                 '>' => {
-                    if let Some('>') = self.peek() {
+                    if let Some((_, '>')) = self.peek() {
                         self.next_char();
                         return Some(self.check_next_char(
                             '=',
@@ -274,12 +269,12 @@ impl<'a> Iterator for Lexer<'a> {
                     }
                 }
                 '&' => {
-                    if let Some('&') = self.peek() {
+                    if let Some((_, '&')) = self.peek() {
                         self.next_char();
                         return Some(Token {
                             kind: TokenKind::DoubleAmpersand,
                             start,
-                            end: self.position,
+                            end: start + 2,
                             line: self.line,
                         });
                     } else {
@@ -292,12 +287,12 @@ impl<'a> Iterator for Lexer<'a> {
                     }
                 }
                 '|' => {
-                    if let Some('|') = self.peek() {
+                    if let Some((_, '|')) = self.peek() {
                         self.next_char();
                         return Some(Token {
                             kind: TokenKind::DoublePipe,
                             start,
-                            end: self.position,
+                            end: start + 2,
                             line: self.line,
                         });
                     } else {
@@ -329,7 +324,7 @@ impl<'a> Iterator for Lexer<'a> {
                     return Some(Token {
                         kind: TokenKind::Tilde,
                         start,
-                        end: self.position,
+                        end: start + 1,
                         line: self.line,
                     });
                 }
@@ -337,7 +332,7 @@ impl<'a> Iterator for Lexer<'a> {
                     return Some(Token {
                         kind: TokenKind::LParen,
                         start,
-                        end: self.position,
+                        end: start + 1,
                         line: self.line,
                     });
                 }
@@ -345,7 +340,7 @@ impl<'a> Iterator for Lexer<'a> {
                     return Some(Token {
                         kind: TokenKind::RParen,
                         start,
-                        end: self.position,
+                        end: start + 1,
                         line: self.line,
                     });
                 }
@@ -353,7 +348,7 @@ impl<'a> Iterator for Lexer<'a> {
                     return Some(Token {
                         kind: TokenKind::LBrace,
                         start,
-                        end: self.position,
+                        end: start + 1,
                         line: self.line,
                     });
                 }
@@ -361,7 +356,7 @@ impl<'a> Iterator for Lexer<'a> {
                     return Some(Token {
                         kind: TokenKind::RBrace,
                         start,
-                        end: self.position,
+                        end: start + 1,
                         line: self.line,
                     });
                 }
@@ -369,17 +364,17 @@ impl<'a> Iterator for Lexer<'a> {
                     return Some(Token {
                         kind: TokenKind::Semicolon,
                         start,
-                        end: self.position,
+                        end: start + 1,
                         line: self.line,
                     });
                 }
                 '+' => {
-                    if let Some('+') = self.peek() {
+                    if let Some((_, '+')) = self.peek() {
                         self.next_char();
                         return Some(Token {
                             kind: TokenKind::DoublePlus,
                             start,
-                            end: self.position,
+                            end: start + 2,
                             line: self.line,
                         });
                     } else {
@@ -427,7 +422,7 @@ impl<'a> Iterator for Lexer<'a> {
                     return Some(Token {
                         kind: TokenKind::Huh,
                         start,
-                        end: self.position,
+                        end: start + 1,
                         line: self.line,
                     });
                 }
@@ -435,7 +430,7 @@ impl<'a> Iterator for Lexer<'a> {
                     return Some(Token {
                         kind: TokenKind::Colon,
                         start,
-                        end: self.position,
+                        end: start + 1,
                         line: self.line,
                     });
                 }
@@ -443,7 +438,7 @@ impl<'a> Iterator for Lexer<'a> {
                     return Some(Token {
                         kind: TokenKind::Comma,
                         start,
-                        end: self.position,
+                        end: start + 1,
                         line: self.line,
                     });
                 }
