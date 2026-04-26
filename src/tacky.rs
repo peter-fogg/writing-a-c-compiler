@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 
+use crate::interner::{Interner, Symbol};
 use crate::parser::{
     BinaryOperator, BlockItem, CaseInfo, CompoundOperator, Crement, Declaration, Expression,
     Fixity, ForInit, Function, Program, Statement, UnaryOperator, Var,
@@ -36,7 +37,7 @@ pub enum BinaryOp {
 #[derive(Debug, PartialEq, Clone)]
 pub enum Val {
     Constant(i32),
-    Var(String),
+    Var(Symbol),
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -58,19 +59,19 @@ pub enum Instr {
         dst: Val,
     },
     Jump {
-        target: String,
+        target: Symbol,
     },
     JumpIfZero {
         condition: Val,
-        target: String,
+        target: Symbol,
     },
     JumpIfNotZero {
         condition: Val,
-        target: String,
+        target: Symbol,
     },
-    Label(String),
+    Label(Symbol),
     Call {
-        name: String,
+        name: Symbol,
         params: Vec<Val>,
         dst: Val,
     },
@@ -79,13 +80,13 @@ pub enum Instr {
 #[derive(Debug, PartialEq, Clone)]
 pub enum TopLevel {
     TackyFunction {
-        name: String,
-        params: Vec<String>,
+        name: Symbol,
+        params: Vec<Symbol>,
         instructions: Vec<Instr>,
         global: bool,
     },
     StaticVar {
-        name: String,
+        name: Symbol,
         global: bool,
         init: i32,
     },
@@ -96,14 +97,19 @@ pub type Tacky = Vec<TopLevel>;
 
 struct TackifyState<'a> {
     count: u8,
-    symbols: &'a HashMap<String, (Type, Attrs)>,
+    symbols: &'a HashMap<Symbol, (Type, Attrs)>,
+    interner: &'a mut Interner,
 }
 
-pub fn emit_tacky(program: Program, symbols: &HashMap<String, (Type, Attrs)>) -> Tacky {
+pub fn emit_tacky(
+    program: Program,
+    symbols: &HashMap<Symbol, (Type, Attrs)>,
+    interner: &mut Interner,
+) -> Tacky {
     let declarations = program.0;
     let mut program_tacky = Vec::new();
 
-    let mut tackify_state = TackifyState::new(symbols);
+    let mut tackify_state = TackifyState::new(symbols, interner);
 
     for declaration in declarations {
         match declaration {
@@ -120,8 +126,12 @@ pub fn emit_tacky(program: Program, symbols: &HashMap<String, (Type, Attrs)>) ->
 }
 
 impl<'a> TackifyState<'a> {
-    pub fn new(symbols: &'a HashMap<String, (Type, Attrs)>) -> Self {
-        Self { count: 0, symbols }
+    pub fn new(symbols: &'a HashMap<Symbol, (Type, Attrs)>, interner: &'a mut Interner) -> Self {
+        Self {
+            count: 0,
+            symbols,
+            interner,
+        }
     }
 
     fn tackify_symbols(&mut self, program: &mut Tacky) {
@@ -129,12 +139,12 @@ impl<'a> TackifyState<'a> {
             if let Attrs::Static { init, global } = attrs {
                 match init {
                     InitValue::Initial(n) => program.push(StaticVar {
-                        name: name.to_string(),
+                        name: *name,
                         global: *global,
                         init: *n,
                     }),
                     InitValue::Tentative => program.push(StaticVar {
-                        name: name.to_string(),
+                        name: *name,
                         global: *global,
                         init: 0,
                     }),
@@ -153,7 +163,6 @@ impl<'a> TackifyState<'a> {
     ) {
         if let Some(body) = body {
             let mut instructions = Vec::new();
-            let name = name.clone();
             self.tackify_block(body, &mut instructions);
             instructions.push(Instr::Return(Val::Constant(0)));
             let global = match self.symbols.get(&name) {
@@ -214,12 +223,10 @@ impl<'a> TackifyState<'a> {
                 let end_label = self.new_temp("if_end");
                 instrs.push(Instr::JumpIfZero {
                     condition: cond,
-                    target: else_label.clone(),
+                    target: else_label,
                 });
                 self.tackify_statement(*if_stmt, instrs);
-                instrs.push(Instr::Jump {
-                    target: end_label.clone(),
-                });
+                instrs.push(Instr::Jump { target: end_label });
                 instrs.push(Instr::Label(else_label));
                 self.tackify_statement(*else_stmt, instrs);
                 instrs.push(Instr::Label(end_label));
@@ -229,7 +236,7 @@ impl<'a> TackifyState<'a> {
                 let end_label = self.new_temp("if_end");
                 instrs.push(Instr::JumpIfZero {
                     condition: cond,
-                    target: end_label.clone(),
+                    target: end_label,
                 });
                 self.tackify_statement(*if_stmt, instrs);
                 instrs.push(Instr::Label(end_label));
@@ -243,34 +250,36 @@ impl<'a> TackifyState<'a> {
             }
             Statement::Compound(block_items) => self.tackify_block(block_items, instrs),
             Statement::Break(label) => instrs.push(Instr::Jump {
-                target: "break".to_owned() + &label,
+                target: self.block_label("break", label),
             }),
             Statement::Continue(label) => instrs.push(Instr::Jump {
-                target: "continue".to_owned() + &label,
+                target: self.block_label("continue", label),
             }),
             Statement::DoWhile(label, body, cond) => {
-                instrs.push(Instr::Label(label.clone()));
+                instrs.push(Instr::Label(label));
                 self.tackify_statement(*body, instrs);
-                instrs.push(Instr::Label("continue".to_owned() + &label));
+                instrs.push(Instr::Label(self.block_label("continue", label)));
                 let cond = self.tackify_expr(cond, instrs);
                 instrs.push(Instr::JumpIfNotZero {
                     condition: cond,
-                    target: label.clone(),
+                    target: label,
                 });
-                instrs.push(Instr::Label("break".to_owned() + &label));
+                instrs.push(Instr::Label(self.block_label("break", label)));
             }
             Statement::While(label, cond, body) => {
-                instrs.push(Instr::Label("continue".to_owned() + &label));
+                let continue_label = self.block_label("continue", label);
+                let break_label = self.block_label("break", label);
+                instrs.push(Instr::Label(continue_label));
                 let cond = self.tackify_expr(cond, instrs);
                 instrs.push(Instr::JumpIfZero {
                     condition: cond,
-                    target: "break".to_owned() + &label,
+                    target: break_label,
                 });
                 self.tackify_statement(*body, instrs);
                 instrs.push(Instr::Jump {
-                    target: "continue".to_owned() + &label,
+                    target: continue_label,
                 });
-                instrs.push(Instr::Label("break".to_owned() + &label));
+                instrs.push(Instr::Label(break_label));
             }
             Statement::For(label, init, cond, post, body) => {
                 match init {
@@ -282,24 +291,23 @@ impl<'a> TackifyState<'a> {
                     }
                     ForInit::Null => (),
                 }
-                instrs.push(Instr::Label(label.clone()));
+                instrs.push(Instr::Label(label));
+                let break_label = self.block_label("break", label);
                 if let Some(expr) = cond {
                     let result = self.tackify_expr(expr, instrs);
                     instrs.push(Instr::JumpIfZero {
                         condition: result,
-                        target: "break".to_owned() + &label,
+                        target: break_label,
                     });
                 }
                 self.tackify_statement(*body, instrs);
-                instrs.push(Instr::Label("continue".to_owned() + &label));
+                instrs.push(Instr::Label(self.block_label("continue", label)));
                 if let Some(expr) = post {
                     self.tackify_expr(expr, instrs);
                 }
                 instrs.extend(vec![
-                    Instr::Jump {
-                        target: label.clone(),
-                    },
-                    Instr::Label("break".to_owned() + &label),
+                    Instr::Jump { target: label },
+                    Instr::Label(break_label),
                 ])
             }
             Statement::Case(label, _expr, stmt) => {
@@ -334,7 +342,7 @@ impl<'a> TackifyState<'a> {
                             });
                             instrs.push(Instr::JumpIfNotZero {
                                 condition: dst,
-                                target: label.to_string(),
+                                target: *label,
                             })
                         }
                         _ => unreachable!(),
@@ -342,17 +350,16 @@ impl<'a> TackifyState<'a> {
                 }
                 if default.len() == 1 {
                     match default[0] {
-                        CaseInfo::Default { label } => instrs.push(Instr::Jump {
-                            target: label.to_string(),
-                        }),
+                        CaseInfo::Default { label } => instrs.push(Instr::Jump { target: *label }),
                         _ => unreachable!(),
                     }
                 }
+                let break_label = self.block_label("break", label);
                 instrs.push(Instr::Jump {
-                    target: "break".to_owned() + &label,
+                    target: break_label,
                 });
                 self.tackify_statement(*body, instrs);
-                instrs.push(Instr::Label("break".to_owned() + &label));
+                instrs.push(Instr::Label(break_label));
             }
         }
     }
@@ -382,21 +389,19 @@ impl<'a> TackifyState<'a> {
 
                 instrs.push(Instr::JumpIfZero {
                     condition: lhs,
-                    target: false_label.clone(),
+                    target: false_label,
                 });
                 let rhs = self.tackify_expr(*rhs, instrs);
                 instrs.extend(vec![
                     Instr::JumpIfZero {
                         condition: rhs,
-                        target: false_label.clone(),
+                        target: false_label,
                     },
                     Instr::Copy {
                         src: Val::Constant(1),
                         dst: ret_val.clone(),
                     },
-                    Instr::Jump {
-                        target: end_label.clone(),
-                    },
+                    Instr::Jump { target: end_label },
                     Instr::Label(false_label),
                     Instr::Copy {
                         src: Val::Constant(0),
@@ -415,21 +420,19 @@ impl<'a> TackifyState<'a> {
                 let lhs = self.tackify_expr(*lhs, instrs);
                 instrs.push(Instr::JumpIfNotZero {
                     condition: lhs,
-                    target: true_label.clone(),
+                    target: true_label,
                 });
                 let rhs = self.tackify_expr(*rhs, instrs);
                 instrs.extend(vec![
                     Instr::JumpIfNotZero {
                         condition: rhs,
-                        target: true_label.clone(),
+                        target: true_label,
                     },
                     Instr::Copy {
                         src: Val::Constant(0),
                         dst: ret_val.clone(),
                     },
-                    Instr::Jump {
-                        target: end_label.clone(),
-                    },
+                    Instr::Jump { target: end_label },
                     Instr::Label(true_label),
                     Instr::Copy {
                         src: Val::Constant(1),
@@ -481,7 +484,7 @@ impl<'a> TackifyState<'a> {
 
                 instrs.push(Instr::Copy {
                     src: tmp_dst,
-                    dst: Val::Var(id.clone()),
+                    dst: Val::Var(id),
                 });
 
                 Val::Var(id)
@@ -499,7 +502,7 @@ impl<'a> TackifyState<'a> {
 
                 instrs.push(Instr::Copy {
                     src: result,
-                    dst: Val::Var(id.clone()),
+                    dst: Val::Var(id),
                 });
                 Val::Var(id)
             }
@@ -537,7 +540,7 @@ impl<'a> TackifyState<'a> {
                 let cond_dst = Val::Var(self.new_temp("cond_result"));
                 instrs.push(Instr::JumpIfZero {
                     condition: cond_expr,
-                    target: else_label.clone(),
+                    target: else_label,
                 });
                 let if_expr = self.tackify_expr(*if_expr, instrs);
                 instrs.extend(vec![
@@ -545,9 +548,7 @@ impl<'a> TackifyState<'a> {
                         src: if_expr,
                         dst: cond_dst.clone(),
                     },
-                    Instr::Jump {
-                        target: end_label.clone(),
-                    },
+                    Instr::Jump { target: end_label },
                     Instr::Label(else_label),
                 ]);
                 let else_expr = self.tackify_expr(*else_expr, instrs);
@@ -577,10 +578,16 @@ impl<'a> TackifyState<'a> {
         }
     }
 
-    fn new_temp(&mut self, var_name: &'static str) -> String {
+    fn new_temp(&mut self, var_name: &'static str) -> Symbol {
         let count = self.count;
         self.count += 1;
-        format!("{}.{}", var_name, count)
+        self.interner.intern(format!("{}.{}", var_name, count))
+    }
+
+    fn block_label(&mut self, label_kind: &'static str, block: Symbol) -> Symbol {
+        let block_str = self.interner.get_symbol(block);
+        let formatted = format!("{}{}", label_kind, block_str);
+        self.interner.intern(formatted)
     }
 
     fn convert_crement(crement: Crement) -> BinaryOp {

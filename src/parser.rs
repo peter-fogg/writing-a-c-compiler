@@ -1,3 +1,4 @@
+use crate::interner::{Interner, Symbol};
 use crate::lexer::{Lexer, Token, TokenKind};
 
 #[derive(Debug, PartialEq, Clone, Copy)]
@@ -63,10 +64,10 @@ pub enum Expression {
     Binary(BinaryOperator, Box<Expression>, Box<Expression>),
     Compound(CompoundOperator, Box<Expression>, Box<Expression>),
     Crement(Fixity, Crement, Box<Expression>),
-    Var(String),
+    Var(Symbol),
     Assign(Box<Expression>, Box<Expression>),
     Conditional(Box<Expression>, Box<Expression>, Box<Expression>),
-    Call(String, Vec<Expression>),
+    Call(Symbol, Vec<Expression>),
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -74,35 +75,35 @@ pub enum Statement {
     Return(Expression),
     Exp(Expression),
     If(Expression, Box<Statement>, Option<Box<Statement>>),
-    Goto(String),
-    Label(String, Box<Statement>),
+    Goto(Symbol),
+    Label(Symbol, Box<Statement>),
     Compound(Vec<BlockItem>),
-    Break(String),
-    Continue(String),
-    While(String, Expression, Box<Statement>),
+    Break(Symbol),
+    Continue(Symbol),
+    While(Symbol, Expression, Box<Statement>),
     For(
-        String,
+        Symbol,
         ForInit,
         Option<Expression>,
         Option<Expression>,
         Box<Statement>,
     ),
-    DoWhile(String, Box<Statement>, Expression),
+    DoWhile(Symbol, Box<Statement>, Expression),
     Switch {
-        label: String,
+        label: Symbol,
         expr: Expression,
         body: Box<Statement>,
         cases: Vec<CaseInfo>,
     },
-    Case(String, Expression, Box<Statement>),
-    Default(String, Box<Statement>),
+    Case(Symbol, Expression, Box<Statement>),
+    Default(Symbol, Box<Statement>),
     Null,
 }
 
 #[derive(Debug, PartialEq, Clone)]
 pub enum CaseInfo {
-    Case { expr: i32, label: String },
-    Default { label: String },
+    Case { expr: i32, label: Symbol },
+    Default { label: Symbol },
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -126,15 +127,15 @@ pub enum BlockItem {
 
 #[derive(Debug, PartialEq, Clone)]
 pub struct Var {
-    pub name: String,
+    pub name: Symbol,
     pub init: Option<Expression>,
     pub storage: Option<StorageClass>,
 }
 
 #[derive(Debug, PartialEq, Clone)]
 pub struct Function {
-    pub name: String,
-    pub params: Vec<String>,
+    pub name: Symbol,
+    pub params: Vec<Symbol>,
     pub body: Option<Vec<BlockItem>>,
     pub storage: Option<StorageClass>,
 }
@@ -173,19 +174,22 @@ pub struct Parser<'a> {
     last_token: Option<Token<'a>>,
     current_token: Option<Token<'a>>,
     next_token: Option<Token<'a>>,
+    interner: &'a mut Interner,
 }
 
 const UNLABELLED: &str = "unlabelled";
 
 impl<'a> Parser<'a> {
-    pub fn new(mut tokens: Lexer<'a>) -> Self {
+    pub fn new(mut tokens: Lexer<'a>, interner: &'a mut Interner) -> Self {
         let current_token = tokens.next();
         let next_token = tokens.next();
+        interner.intern(UNLABELLED.into());
         Self {
             last_token: None,
             tokens,
             current_token,
             next_token,
+            interner,
         }
     }
 
@@ -219,7 +223,7 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn consume(&mut self, kind: TokenKind) {
+    fn consume(&mut self, kind: TokenKind<'a>) {
         match self.current() {
             t if t.kind == kind => {
                 self.advance();
@@ -251,11 +255,11 @@ impl<'a> Parser<'a> {
         block_items
     }
 
-    fn name(&mut self) -> String {
+    fn name(&mut self) -> Symbol {
         match self.current().kind {
             TokenKind::Id(id) => {
                 self.advance();
-                id.to_string()
+                self.interner.intern(id.into())
             }
             t => self.report_error(format!("Expected identifier, got {:?}", t)),
         }
@@ -338,7 +342,7 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn param_list(&mut self) -> Vec<String> {
+    fn param_list(&mut self) -> Vec<Symbol> {
         let mut params = vec![];
         if self.current().kind == TokenKind::Void {
             self.consume(TokenKind::Void);
@@ -347,8 +351,7 @@ impl<'a> Parser<'a> {
 
         while {
             self.consume(TokenKind::Int);
-            let name = self.name();
-            params.push(name.clone());
+            params.push(self.name());
 
             let comma = self.current().kind == TokenKind::Comma;
             if comma {
@@ -405,7 +408,8 @@ impl<'a> Parser<'a> {
                 self.advance();
                 self.consume(TokenKind::Colon);
                 let stmt = self.statement();
-                Statement::Label(id.to_string(), Box::new(stmt))
+                let id = self.interner.intern(id.into());
+                Statement::Label(id, Box::new(stmt))
             }
             TokenKind::Goto => {
                 self.consume(TokenKind::Goto);
@@ -413,7 +417,8 @@ impl<'a> Parser<'a> {
                     TokenKind::Id(id) => {
                         self.advance();
                         self.consume(TokenKind::Semicolon);
-                        Statement::Goto(id.to_string())
+                        let id = self.interner.intern(id.into());
+                        Statement::Goto(id)
                     }
                     kind => {
                         self.report_error(format!("Expected identifier after goto, got {:?}", kind))
@@ -423,13 +428,13 @@ impl<'a> Parser<'a> {
             TokenKind::LBrace => Statement::Compound(self.block()),
             TokenKind::Break => {
                 self.advance();
-                let stmt = Statement::Break(UNLABELLED.to_string());
+                let stmt = Statement::Break(self.interner.get_str(UNLABELLED));
                 self.consume(TokenKind::Semicolon);
                 stmt
             }
             TokenKind::Continue => {
                 self.advance();
-                let stmt = Statement::Continue(UNLABELLED.to_string());
+                let stmt = Statement::Continue(self.interner.get_str(UNLABELLED));
                 self.consume(TokenKind::Semicolon);
                 stmt
             }
@@ -439,7 +444,7 @@ impl<'a> Parser<'a> {
                 let cond = self.expression(Prec::Bottom);
                 self.consume(TokenKind::RParen);
                 let body = self.statement();
-                Statement::While(UNLABELLED.to_string(), cond, Box::new(body))
+                Statement::While(self.interner.get_str(UNLABELLED), cond, Box::new(body))
             }
             TokenKind::Do => {
                 self.consume(TokenKind::Do);
@@ -449,7 +454,7 @@ impl<'a> Parser<'a> {
                 let cond = self.expression(Prec::Bottom);
                 self.consume(TokenKind::RParen);
                 self.consume(TokenKind::Semicolon);
-                Statement::DoWhile(UNLABELLED.to_string(), Box::new(body), cond)
+                Statement::DoWhile(self.interner.get_str(UNLABELLED), Box::new(body), cond)
             }
             TokenKind::For => {
                 self.consume(TokenKind::For);
@@ -492,7 +497,13 @@ impl<'a> Parser<'a> {
                 };
                 let body = self.statement();
 
-                Statement::For(UNLABELLED.to_string(), init, cond, post, Box::new(body))
+                Statement::For(
+                    self.interner.get_str(UNLABELLED),
+                    init,
+                    cond,
+                    post,
+                    Box::new(body),
+                )
             }
             TokenKind::Switch => {
                 self.consume(TokenKind::Switch);
@@ -501,7 +512,7 @@ impl<'a> Parser<'a> {
                 self.consume(TokenKind::RParen);
                 let body = Box::new(self.statement());
                 Statement::Switch {
-                    label: UNLABELLED.to_string(),
+                    label: self.interner.get_str(UNLABELLED),
                     expr,
                     body,
                     cases: vec![],
@@ -512,13 +523,13 @@ impl<'a> Parser<'a> {
                 let expr = self.expression(Prec::Bottom);
                 self.consume(TokenKind::Colon);
                 let stmt = self.statement();
-                Statement::Case(UNLABELLED.to_string(), expr, Box::new(stmt))
+                Statement::Case(self.interner.get_str(UNLABELLED), expr, Box::new(stmt))
             }
             TokenKind::Default => {
                 self.consume(TokenKind::Default);
                 self.consume(TokenKind::Colon);
                 let stmt = self.statement();
-                Statement::Default(UNLABELLED.to_string(), Box::new(stmt))
+                Statement::Default(self.interner.get_str(UNLABELLED), Box::new(stmt))
             }
             TokenKind::Eof => {
                 self.report_error("Unexpected end of input parsing statement".to_string())
@@ -532,13 +543,8 @@ impl<'a> Parser<'a> {
     }
 
     fn constant(&mut self) -> Expression {
-        let n_str = match self.current().kind {
-            TokenKind::Constant(n_str) => n_str,
-            err => self.report_error(format!("bad numeric parse: {:?}", err)),
-        };
-
-        let n = match n_str.parse::<i32>() {
-            Ok(n) => n,
+        let n = match self.current().kind {
+            TokenKind::Constant(n) => n,
             err => self.report_error(format!("bad numeric parse: {:?}", err)),
         };
         self.advance();
@@ -708,7 +714,7 @@ impl<'a> Parser<'a> {
             }
             TokenKind::Id(id) => {
                 self.advance();
-                let id = id.to_string();
+                let id = self.interner.intern(id.into());
                 if self.current().kind == TokenKind::LParen {
                     self.consume(TokenKind::LParen);
                     let mut params = vec![];
@@ -807,7 +813,7 @@ impl<'a> Parser<'a> {
         unop
     }
 
-    fn is_specifier(t: Token<'_>) -> bool {
+    fn is_specifier(t: Token) -> bool {
         matches!(
             t.kind,
             TokenKind::Int | TokenKind::Extern | TokenKind::Static

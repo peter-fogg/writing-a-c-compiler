@@ -4,15 +4,16 @@ use std::{fs::File, io::Write};
 use crate::codegen::{
     AsmTopLevel, Assembly, BinaryOp, CondCode, Instr, Operand, Register, UnaryOp,
 };
+use crate::interner::Interner;
 
-pub fn emit(asm: Assembly, mut file: File) -> Result<()> {
+pub fn emit(asm: Assembly, interner: &Interner, mut file: File) -> Result<()> {
     for top_level in asm {
-        emit_top_level(top_level, &mut file)?
+        emit_top_level(top_level, interner, &mut file)?
     }
     Ok(())
 }
 
-fn emit_top_level(top_level: AsmTopLevel, file: &mut File) -> Result<()> {
+fn emit_top_level(top_level: AsmTopLevel, interner: &Interner, file: &mut File) -> Result<()> {
     match top_level {
         AsmTopLevel::AsmFunction {
             name,
@@ -20,18 +21,18 @@ fn emit_top_level(top_level: AsmTopLevel, file: &mut File) -> Result<()> {
             global,
         } => {
             if global {
-                file.write_all(format!("\t.globl _{}\n", name).as_bytes())?;
+                file.write_all(format!("\t.globl _{}\n", interner.get_symbol(name)).as_bytes())?;
             }
-            file.write_all(format!("_{}:\n", name).as_bytes())?;
+            file.write_all(format!("_{}:\n", interner.get_symbol(name)).as_bytes())?;
             file.write_all("\tpushq\t%rbp\n".as_bytes())?;
             file.write_all("\tmovq\t%rsp, %rbp\n".as_bytes())?;
             for instr in instructions {
-                emit_instr(instr, file)?;
+                emit_instr(instr, interner, file)?;
             }
         }
         AsmTopLevel::AsmStatic { name, global, init } => {
             if global {
-                file.write_all(format!("\t.globl _{}\n", name).as_bytes())?;
+                file.write_all(format!("\t.globl _{}\n", interner.get_symbol(name)).as_bytes())?;
             }
             if init == 0 {
                 file.write_all("\t.bss\n".as_bytes())?;
@@ -39,7 +40,7 @@ fn emit_top_level(top_level: AsmTopLevel, file: &mut File) -> Result<()> {
                 file.write_all("\t.data\n".as_bytes())?;
             }
             file.write_all("\t.balign 4\n".as_bytes())?;
-            file.write_all(format!("_{}:\n", name).as_bytes())?;
+            file.write_all(format!("_{}:\n", interner.get_symbol(name)).as_bytes())?;
             if init == 0 {
                 file.write_all("\t.zero 4\n".as_bytes())?;
             } else {
@@ -50,7 +51,7 @@ fn emit_top_level(top_level: AsmTopLevel, file: &mut File) -> Result<()> {
     Ok(())
 }
 
-fn emit_instr(instr: Instr, file: &mut File) -> Result<()> {
+fn emit_instr(instr: Instr, interner: &Interner, file: &mut File) -> Result<()> {
     match instr {
         Instr::Ret => {
             file.write_all("\tmovq \t%rbp, %rsp\n".as_bytes())?;
@@ -60,8 +61,8 @@ fn emit_instr(instr: Instr, file: &mut File) -> Result<()> {
         Instr::Mov { src, dst } => file.write_all(
             format!(
                 "\tmovl\t{}, {}\n",
-                write_operand(src, 4),
-                write_operand(dst, 4)
+                write_operand(src, 4, interner),
+                write_operand(dst, 4, interner)
             )
             .as_bytes(),
         )?,
@@ -70,50 +71,65 @@ fn emit_instr(instr: Instr, file: &mut File) -> Result<()> {
             file.write_all(format!("\taddq\t${}, %rsp\n", n).as_bytes())?
         }
         Instr::Unary { unop, dst: operand } => file.write_all(
-            format!("\t{}\t{}\n", write_unop(unop), write_operand(operand, 4)).as_bytes(),
+            format!(
+                "\t{}\t{}\n",
+                write_unop(unop),
+                write_operand(operand, 4, interner)
+            )
+            .as_bytes(),
         )?,
         Instr::Binary { binop, src, dst } => file.write_all(
             format!(
                 "\t{}\t{}, {}\n",
                 write_binop(binop),
                 if matches!(binop, BinaryOp::ShiftLeft | BinaryOp::ShiftRight) {
-                    write_operand(src, 1)
+                    write_operand(src, 1, interner)
                 } else {
-                    write_operand(src, 4)
+                    write_operand(src, 4, interner)
                 },
-                write_operand(dst, 4),
+                write_operand(dst, 4, interner),
             )
             .as_bytes(),
         )?,
-        Instr::IDiv(operand) => {
-            file.write_all(format!("\tidivl\t{}\n", write_operand(operand, 4)).as_bytes())?
-        }
+        Instr::IDiv(operand) => file
+            .write_all(format!("\tidivl\t{}\n", write_operand(operand, 4, interner)).as_bytes())?,
         Instr::Cdq => file.write_all("\tcdq\n".as_bytes())?,
         Instr::Cmp { lhs, rhs } => file.write_all(
             format!(
                 "\tcmpl\t{}, {}\n",
-                write_operand(lhs, 4),
-                write_operand(rhs, 4)
+                write_operand(lhs, 4, interner),
+                write_operand(rhs, 4, interner)
             )
             .as_bytes(),
         )?,
-        Instr::Jmp(label) => file.write_all(format!("\tjmp\t.L{}\n", label).as_bytes())?,
-        Instr::JmpCC(cond_code, label) => {
-            file.write_all(format!("\tj{}\t.L{}\n", write_cond_code(cond_code), label).as_bytes())?
+        Instr::Jmp(label) => {
+            file.write_all(format!("\tjmp\t.L{}\n", interner.get_symbol(label)).as_bytes())?
         }
+        Instr::JmpCC(cond_code, label) => file.write_all(
+            format!(
+                "\tj{}\t.L{}\n",
+                write_cond_code(cond_code),
+                interner.get_symbol(label)
+            )
+            .as_bytes(),
+        )?,
         Instr::SetCC(cond_code, operand) => file.write_all(
             format!(
                 "\tset{}\t{}\n",
                 write_cond_code(cond_code),
-                write_operand(operand, 1)
+                write_operand(operand, 1, interner)
             )
             .as_bytes(),
         )?,
-        Instr::Label(label) => file.write_all(format!(".L{}:\n", label).as_bytes())?,
-        Instr::Call(name) => file.write_all(format!("\tcall _{}\n", name).as_bytes())?,
+        Instr::Label(label) => {
+            file.write_all(format!(".L{}:\n", interner.get_symbol(label)).as_bytes())?
+        }
+        Instr::Call(name) => {
+            file.write_all(format!("\tcall _{}\n", interner.get_symbol(name)).as_bytes())?
+        }
 
         Instr::Push(operand) => {
-            file.write_all(format!("\tpushq {}\n", write_operand(operand, 8)).as_bytes())?
+            file.write_all(format!("\tpushq {}\n", write_operand(operand, 8, interner)).as_bytes())?
         }
     }
     Ok(())
@@ -153,13 +169,13 @@ fn write_binop(binop: BinaryOp) -> String {
     .to_string()
 }
 
-fn write_operand(op: Operand, bytes: u8) -> String {
+fn write_operand(op: Operand, bytes: u8, interner: &Interner) -> String {
     match op {
         Operand::Reg(reg) => write_register(reg, bytes),
         Operand::Imm(n) => format!("${}", n),
         Operand::Stack(offset) => format!("{}(%rbp)", offset),
         Operand::Pseudo(s) => panic!("Pseudo operand {} not replaced", s),
-        Operand::Data(var) => format!("_{}(%rip)", var),
+        Operand::Data(var) => format!("_{}(%rip)", interner.get_symbol(var)),
     }
 }
 

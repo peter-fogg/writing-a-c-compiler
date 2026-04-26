@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 
+use crate::interner::Symbol;
 use crate::semantic_analysis::{Attrs, Type};
 use crate::tacky::{self, Tacky, TopLevel};
 
@@ -7,9 +8,9 @@ use crate::tacky::{self, Tacky, TopLevel};
 pub enum Operand {
     Imm(i32),
     Reg(Register),
-    Pseudo(String),
+    Pseudo(Symbol),
     Stack(i16),
-    Data(String),
+    Data(Symbol),
 }
 
 #[derive(Debug, PartialEq, Clone, Copy)]
@@ -72,27 +73,27 @@ pub enum Instr {
     IDiv(Operand),
     Cdq,
     AllocateStack(u16),
-    Jmp(String),
-    JmpCC(CondCode, String),
+    Jmp(Symbol),
+    JmpCC(CondCode, Symbol),
     SetCC(CondCode, Operand),
-    Label(String),
+    Label(Symbol),
     Cmp {
         lhs: Operand,
         rhs: Operand,
     },
     DeallocateStack(u16),
     Push(Operand),
-    Call(String),
+    Call(Symbol),
 }
 #[derive(Debug, PartialEq, Clone)]
 pub enum AsmTopLevel {
     AsmFunction {
-        name: String,
+        name: Symbol,
         instructions: Vec<Instr>,
         global: bool,
     },
     AsmStatic {
-        name: String,
+        name: Symbol,
         global: bool,
         init: i32,
     },
@@ -101,12 +102,12 @@ pub enum AsmTopLevel {
 pub type Assembly = Vec<AsmTopLevel>;
 
 struct ReplaceState<'a> {
-    offsets: HashMap<String, u16>,
+    offsets: HashMap<Symbol, u16>,
     max_offset: u16,
-    symbols: &'a HashMap<String, (Type, Attrs)>,
+    symbols: &'a HashMap<Symbol, (Type, Attrs)>,
 }
 
-pub fn assemble(top_levels: Tacky, symbols: &HashMap<String, (Type, Attrs)>) -> Assembly {
+pub fn assemble(top_levels: Tacky, symbols: &HashMap<Symbol, (Type, Attrs)>) -> Assembly {
     let mut asm_top_levels = Vec::with_capacity(top_levels.len());
     for top_level in top_levels {
         asm_top_levels.push(assemble_top_level(top_level, symbols));
@@ -116,7 +117,7 @@ pub fn assemble(top_levels: Tacky, symbols: &HashMap<String, (Type, Attrs)>) -> 
 
 fn assemble_top_level(
     top_level: TopLevel,
-    symbols: &HashMap<String, (Type, Attrs)>,
+    symbols: &HashMap<Symbol, (Type, Attrs)>,
 ) -> AsmTopLevel {
     match top_level {
         TopLevel::TackyFunction {
@@ -130,7 +131,7 @@ fn assemble_top_level(
             for stack_param in params.iter().skip(6) {
                 assembly.push(Instr::Mov {
                     src: Operand::Stack(stack_offset),
-                    dst: Operand::Pseudo(stack_param.to_string()),
+                    dst: Operand::Pseudo(*stack_param),
                 });
                 stack_offset += 8;
             }
@@ -146,7 +147,7 @@ fn assemble_top_level(
             .into_iter();
 
             for (param, src) in params.iter().zip(reg_arg_locations) {
-                let dst = Operand::Pseudo(param.to_string());
+                let dst = Operand::Pseudo(*param);
                 assembly.push(Instr::Mov {
                     src: src.clone(),
                     dst,
@@ -439,7 +440,7 @@ fn assemble_val(val: tacky::Val) -> Operand {
     }
 }
 
-fn replace_pseudo(instrs: &mut [Instr], symbols: &HashMap<String, (Type, Attrs)>) -> u16 {
+fn replace_pseudo(instrs: &mut [Instr], symbols: &HashMap<Symbol, (Type, Attrs)>) -> u16 {
     let stack_map = HashMap::new();
     let mut replace_state = ReplaceState {
         offsets: stack_map,

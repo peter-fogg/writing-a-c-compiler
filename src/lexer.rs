@@ -12,7 +12,7 @@ pub enum TokenKind<'a> {
     LBrace,
     RBrace,
     Return,
-    Constant(&'a str),
+    Constant(i32),
     Semicolon,
     Tilde,
     Plus,
@@ -90,15 +90,18 @@ impl<'a> Lexer<'a> {
     }
 
     pub fn constant(&mut self) -> Token<'a> {
-        let &(mut end, mut c) = self.peek().unwrap();
+        let (mut end, mut c) = *self.peek().unwrap();
         let start = end - 1;
 
         while Self::is_digit(c) {
-            (end, c) = self.next_char().unwrap();
+            self.next_char();
+            (end, c) = *self.peek().unwrap();
         }
 
+        // Unwrap is safe here because this range has just been proven as only made of digits
+        let n = self.source.get(start..end).unwrap().parse::<i32>().unwrap();
         Token {
-            kind: TokenKind::Constant(self.source.get(start..end).unwrap()),
+            kind: TokenKind::Constant(n),
             start,
             end,
             line: self.line,
@@ -106,11 +109,11 @@ impl<'a> Lexer<'a> {
     }
 
     pub fn identifier(&mut self) -> Token<'a> {
-        let &(mut end, mut c) = self.peek().unwrap();
+        let (mut end, mut c) = *self.peek().unwrap();
         let start = end - 1;
-
         while Self::is_alpha(c) || Self::is_digit(c) {
-            (end, c) = self.next_char().unwrap();
+            self.next_char();
+            (end, c) = *self.peek().unwrap();
         }
 
         let id = self.source.get(start..end).unwrap();

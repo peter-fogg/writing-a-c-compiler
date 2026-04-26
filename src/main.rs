@@ -5,6 +5,7 @@ use semantic_analysis::analyze;
 
 mod codegen;
 mod emit;
+mod interner;
 mod lexer;
 mod parser;
 mod pretty;
@@ -51,22 +52,23 @@ fn main() {
 }
 
 fn compile_file(text: String, assembly_path: &path::Path, rest_args: &[String]) {
+    let mut interner = interner::Interner::new();
     let lexed = lexer::Lexer::new(&text);
     if rest_args.iter().any(|s| s == "--lex") {
         println!("{:?}", lexed.collect::<Vec<_>>());
         std::process::exit(0);
     }
-    let parsed = Parser::new(lexed).parse();
+    let parsed = Parser::new(lexed, &mut interner).parse();
     if rest_args.iter().any(|s| s == "--parse") {
         println!("{:?}", pretty::print_program(&parsed));
         std::process::exit(0);
     }
-    let (analyzed, symbols) = analyze(parsed);
+    let (analyzed, symbols) = analyze(parsed, &mut interner);
     if rest_args.iter().any(|s| s == "--validate") {
         println!("{:?}", analyzed.0);
         std::process::exit(0);
     }
-    let tackified = tacky::emit_tacky(analyzed, &symbols);
+    let tackified = tacky::emit_tacky(analyzed, &symbols, &mut interner);
     if rest_args.iter().any(|s| s == "--tacky") {
         println!("{:?}", tackified);
         std::process::exit(0);
@@ -78,6 +80,7 @@ fn compile_file(text: String, assembly_path: &path::Path, rest_args: &[String]) 
     }
     let result = emit::emit(
         assembled,
+        &interner,
         fs::File::create(assembly_path).expect("Error opening .s file"),
     );
     match result {

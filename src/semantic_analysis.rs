@@ -1,5 +1,6 @@
 use std::collections::{HashMap, HashSet};
 
+use crate::interner::{Interner, Symbol};
 use crate::parser::{
     BlockItem, CaseInfo, Declaration, Expression, ForInit, Function, Program, Statement,
     StorageClass, Var,
@@ -19,16 +20,17 @@ enum DeclScope {
 
 #[derive(PartialEq, Eq, Debug, Clone)]
 struct ResolutionInfo {
-    name: String,
+    name: Symbol,
     linkage: Linkage,
 }
 
-struct ResolveState {
-    env: Vec<HashMap<String, ResolutionInfo>>,
+struct ResolveState<'a> {
+    env: Vec<HashMap<Symbol, ResolutionInfo>>,
     count: u8,
+    interner: &'a mut Interner,
 }
 
-impl ResolveState {
+impl ResolveState<'_> {
     pub fn block(&mut self, block_items: Vec<BlockItem>) -> Vec<BlockItem> {
         let mut resolved_items = Vec::new();
         for block_item in block_items {
@@ -49,9 +51,9 @@ impl ResolveState {
         }: Var,
     ) -> Var {
         self.put_env(
-            name.clone(),
+            name,
             ResolutionInfo {
-                name: name.clone(),
+                name,
                 linkage: Linkage::External,
             },
         );
@@ -78,19 +80,19 @@ impl ResolveState {
         }
         if storage == Some(StorageClass::Extern) {
             let res_info = ResolutionInfo {
-                name: name.clone(),
+                name,
                 linkage: Linkage::External,
             };
-            self.put_env(name.clone(), res_info);
+            self.put_env(name, res_info);
             Var {
                 name,
                 storage,
                 init,
             }
         } else {
-            let new_name = self.new_temp(name.clone());
+            let new_name = self.new_temp(name);
             let res_info = ResolutionInfo {
-                name: new_name.clone(),
+                name: new_name,
                 linkage: Linkage::None,
             };
             self.put_env(name, res_info);
@@ -104,13 +106,13 @@ impl ResolveState {
         }
     }
 
-    fn param(&mut self, name: String) -> String {
+    fn param(&mut self, name: Symbol) -> Symbol {
         if self.current_scope_has(&name) {
             panic!("Duplicate variable name {}", name);
         }
-        let new_name = self.new_temp(name.clone());
+        let new_name = self.new_temp(name);
         let res_info = ResolutionInfo {
-            name: new_name.clone(),
+            name: new_name,
             linkage: Linkage::None,
         };
         self.put_env(name, res_info);
@@ -141,9 +143,9 @@ impl ResolveState {
         }
 
         self.put_env(
-            name.clone(),
+            name,
             ResolutionInfo {
-                name: name.clone(),
+                name,
                 linkage: Linkage::External,
             },
         );
@@ -263,7 +265,7 @@ impl ResolveState {
             }
             Expression::Var(id) => {
                 if let Some(ResolutionInfo { name, .. }) = self.get_env(&id) {
-                    Expression::Var(name.to_string())
+                    Expression::Var(*name)
                 } else {
                     panic!("Undeclared variable {:?}", id);
                 }
@@ -303,7 +305,7 @@ impl ResolveState {
             }
             Expression::Call(name, args) => {
                 if let Some(ResolutionInfo { name, .. }) = self.get_env(&name) {
-                    let name = name.to_string();
+                    let name = *name;
                     let mut new_args = Vec::with_capacity(args.len());
                     for arg in args {
                         new_args.push(self.expression(arg));
@@ -317,36 +319,42 @@ impl ResolveState {
         }
     }
 
-    fn new_temp(&mut self, var_name: String) -> String {
+    fn new_temp(&mut self, var: Symbol) -> Symbol {
         let count = self.count;
         self.count += 1;
-        format!("{}.resolved.{}", var_name, count)
+        let var_name = self.interner.get_symbol(var);
+        self.interner
+            .intern(format!("{}.resolved.{}", var_name, count))
     }
 
-    fn get_env(&self, var_name: &String) -> Option<&ResolutionInfo> {
+    fn get_env(&self, var: &Symbol) -> Option<&ResolutionInfo> {
         for map in self.env.iter().rev() {
-            if map.contains_key(var_name) {
-                return Some(map.get(var_name).unwrap());
+            if map.contains_key(var) {
+                return Some(map.get(var).unwrap());
             }
         }
         None
     }
 
-    fn put_env(&mut self, var_name: String, info: ResolutionInfo) {
-        self.env.last_mut().unwrap().insert(var_name, info);
+    fn put_env(&mut self, var: Symbol, info: ResolutionInfo) {
+        self.env.last_mut().unwrap().insert(var, info);
     }
 
-    fn current_scope_has(&self, var_name: &String) -> bool {
-        self.env.last().unwrap().contains_key(var_name)
+    fn current_scope_has(&self, var: &Symbol) -> bool {
+        self.env.last().unwrap().contains_key(var)
     }
 }
 
-pub fn analyze(program: Program) -> (Program, HashMap<String, (Type, Attrs)>) {
+pub fn analyze(
+    program: Program,
+    interner: &mut Interner,
+) -> (Program, HashMap<Symbol, (Type, Attrs)>) {
     let declarations = program.0;
     let mut analyzed = Vec::with_capacity(declarations.len());
     let mut resolve_state = ResolveState {
         env: vec![HashMap::new()],
         count: 0,
+        interner,
     };
 
     for declaration in declarations {
@@ -355,7 +363,7 @@ pub fn analyze(program: Program) -> (Program, HashMap<String, (Type, Attrs)>) {
                 let function = resolve_state.func_declaration(function, DeclScope::File);
 
                 check_labels(&function);
-                let mut function = label_loops(function);
+                let mut function = label_loops(function, &mut *resolve_state.interner);
                 let Function {
                     name: _,
                     body: ref mut block_items,
@@ -396,8 +404,8 @@ fn check_labels(Function { body, .. }: &Function) {
 
 fn check_block_label(
     block_items: &Vec<BlockItem>,
-    label_ids: &mut HashSet<String>,
-    gotos: &mut HashSet<String>,
+    label_ids: &mut HashSet<Symbol>,
+    gotos: &mut HashSet<Symbol>,
 ) {
     for block_item in block_items {
         if let BlockItem::S(stmt) = block_item {
@@ -408,15 +416,15 @@ fn check_block_label(
 
 fn check_statement_label(
     label: &Statement,
-    label_ids: &mut HashSet<String>,
-    gotos: &mut HashSet<String>,
+    label_ids: &mut HashSet<Symbol>,
+    gotos: &mut HashSet<Symbol>,
 ) {
     match label {
         Statement::Label(id, stmt) => {
             if label_ids.contains(id) {
                 panic!("Duplicate label {:?}", id)
             }
-            label_ids.insert(id.to_string());
+            label_ids.insert(*id);
             check_statement_label(stmt, label_ids, gotos);
         }
         Statement::If(_cond, if_stmt, else_stmt) => {
@@ -433,7 +441,7 @@ fn check_statement_label(
         Statement::Case(_, _, stmt) => check_statement_label(stmt, label_ids, gotos),
         Statement::Default(_, stmt) => check_statement_label(stmt, label_ids, gotos),
         Statement::Goto(label) => {
-            gotos.insert(label.to_string());
+            gotos.insert(*label);
         }
         Statement::Break(_)
         | Statement::Continue(_)
@@ -443,8 +451,9 @@ fn check_statement_label(
     }
 }
 
-struct Labeller {
+struct Labeller<'a> {
     count: u8,
+    interner: &'a mut Interner,
 }
 
 #[derive(Clone, Copy)]
@@ -464,33 +473,34 @@ fn label_loops(
         params,
         storage,
     }: Function,
+    interner: &mut Interner,
 ) -> Function {
     Function {
         name,
-        body: body.map(|body| Labeller::new().label_block(body, None, None)),
+        body: body.map(|body| Labeller::new(interner).label_block(body, None, None)),
         params,
         storage,
     }
 }
 
-impl Labeller {
-    fn new() -> Self {
-        Self { count: 0 }
+impl<'a> Labeller<'a> {
+    fn new(interner: &'a mut Interner) -> Self {
+        Self { count: 0, interner }
     }
 
     fn label_block(
         &mut self,
         block_items: Vec<BlockItem>,
-        break_label: Option<String>,
-        continue_label: Option<String>,
+        break_label: Option<Symbol>,
+        continue_label: Option<Symbol>,
     ) -> Vec<BlockItem> {
         let mut labeled = Vec::with_capacity(block_items.len());
         for block_item in block_items {
             match block_item {
                 BlockItem::S(stmt) => labeled.push(BlockItem::S(self.label_statement(
                     stmt,
-                    break_label.clone(),
-                    continue_label.clone(),
+                    break_label,
+                    continue_label,
                 ))),
                 decl => labeled.push(decl),
             }
@@ -501,8 +511,8 @@ impl Labeller {
     fn label_statement(
         &mut self,
         stmt: Statement,
-        break_label: Option<String>,
-        continue_label: Option<String>,
+        break_label: Option<Symbol>,
+        continue_label: Option<Symbol>,
     ) -> Statement {
         match stmt {
             stmt @ (Statement::Return(_)
@@ -511,11 +521,7 @@ impl Labeller {
             | Statement::Null) => stmt,
             Statement::If(cond, if_stmt, else_stmt) => Statement::If(
                 cond,
-                Box::new(self.label_statement(
-                    *if_stmt,
-                    break_label.clone(),
-                    continue_label.clone(),
-                )),
+                Box::new(self.label_statement(*if_stmt, break_label, continue_label)),
                 else_stmt
                     .map(|stmt| Box::new(self.label_statement(*stmt, break_label, continue_label))),
             ),
@@ -526,41 +532,38 @@ impl Labeller {
             Statement::Break(_) if break_label.is_none() => {
                 panic!("Break statement outside of loop or switch")
             }
-            Statement::Break(_) => Statement::Break(break_label.unwrap().to_string()),
+            Statement::Break(_) => Statement::Break(break_label.unwrap()),
             Statement::Continue(_) if continue_label.is_none() => {
                 panic!("Continue statement outside of loop")
             }
-            Statement::Continue(_) => Statement::Continue(continue_label.unwrap().to_string()),
+            Statement::Continue(_) => Statement::Continue(continue_label.unwrap()),
             Statement::Compound(block_items) => {
                 Statement::Compound(self.label_block(block_items, break_label, continue_label))
             }
             Statement::While(_, cond, body) => {
                 let new_label = self.new_label(LabelType::While);
-                let body =
-                    self.label_statement(*body, Some(new_label.clone()), Some(new_label.clone()));
-                Statement::While(new_label.to_string(), cond, Box::new(body))
+                let body = self.label_statement(*body, Some(new_label), Some(new_label));
+                Statement::While(new_label, cond, Box::new(body))
             }
             Statement::DoWhile(_, body, cond) => {
                 let new_label = self.new_label(LabelType::DoWhile);
-                let body =
-                    self.label_statement(*body, Some(new_label.clone()), Some(new_label.clone()));
-                Statement::DoWhile(new_label.to_string(), Box::new(body), cond)
+                let body = self.label_statement(*body, Some(new_label), Some(new_label));
+                Statement::DoWhile(new_label, Box::new(body), cond)
             }
             Statement::For(_, init_decl, cond, post, body) => {
                 let new_label = self.new_label(LabelType::For);
-                let body =
-                    self.label_statement(*body, Some(new_label.clone()), Some(new_label.clone()));
-                Statement::For(new_label.to_string(), init_decl, cond, post, Box::new(body))
+                let body = self.label_statement(*body, Some(new_label), Some(new_label));
+                Statement::For(new_label, init_decl, cond, post, Box::new(body))
             }
             Statement::Case(_, expr, stmt) => {
-                let stmt = self.label_statement(*stmt, break_label.clone(), continue_label);
+                let stmt = self.label_statement(*stmt, break_label, continue_label);
                 let l = self.new_label(LabelType::Case);
-                Statement::Case(l.to_string(), expr, Box::new(stmt))
+                Statement::Case(l, expr, Box::new(stmt))
             }
             Statement::Default(_, stmt) => {
                 let stmt = self.label_statement(*stmt, break_label, continue_label);
                 let l = self.new_label(LabelType::Default);
-                Statement::Default(l.to_string(), Box::new(stmt))
+                Statement::Default(l, Box::new(stmt))
             }
             Statement::Switch {
                 label: _,
@@ -569,8 +572,7 @@ impl Labeller {
                 cases,
             } => {
                 let new_label = self.new_label(LabelType::Switch);
-                let body =
-                    Box::new(self.label_statement(*body, Some(new_label.clone()), continue_label));
+                let body = Box::new(self.label_statement(*body, Some(new_label), continue_label));
                 Statement::Switch {
                     label: new_label,
                     expr,
@@ -581,7 +583,7 @@ impl Labeller {
         }
     }
 
-    fn new_label(&mut self, label_type: LabelType) -> String {
+    fn new_label(&mut self, label_type: LabelType) -> Symbol {
         self.count += 1;
         let label_str = match label_type {
             LabelType::For => "for",
@@ -592,7 +594,8 @@ impl Labeller {
             LabelType::Default => "default",
         };
 
-        format!("{}_{}", label_str, self.count)
+        self.interner
+            .intern(format!("{}_{}", label_str, self.count))
     }
 }
 
@@ -635,7 +638,7 @@ fn gather_statement(stmt: &mut Statement, mut cases: Option<&mut Vec<CaseInfo>>)
                     }
                     c.push(CaseInfo::Case {
                         expr: *n,
-                        label: label.to_string(),
+                        label: *label,
                     });
                 }
                 _ if cases.is_some() => panic!("Non-integral expression in case"),
@@ -652,9 +655,7 @@ fn gather_statement(stmt: &mut Statement, mut cases: Option<&mut Vec<CaseInfo>>)
                     {
                         panic!("Duplicate default inside of switch")
                     }
-                    c.push(CaseInfo::Default {
-                        label: label.to_string(),
-                    });
+                    c.push(CaseInfo::Default { label: *label });
                 }
             }
         }
@@ -682,11 +683,11 @@ pub enum InitValue {
 }
 
 struct TypeChecker {
-    symbols: HashMap<String, (Type, Attrs)>,
+    symbols: HashMap<Symbol, (Type, Attrs)>,
 }
 
 impl TypeChecker {
-    fn check_program(program: &Vec<Declaration>) -> HashMap<String, (Type, Attrs)> {
+    fn check_program(program: &Vec<Declaration>) -> HashMap<Symbol, (Type, Attrs)> {
         let mut type_checker = TypeChecker {
             symbols: HashMap::new(),
         };
@@ -748,12 +749,11 @@ impl TypeChecker {
             global,
         };
 
-        self.symbols.insert(name.to_string(), (fun_type, attrs));
+        self.symbols.insert(*name, (fun_type, attrs));
 
         if let Some(block_items) = body {
             for param in params {
-                self.symbols
-                    .insert(param.to_string(), (Type::Int, Attrs::Local));
+                self.symbols.insert(*param, (Type::Int, Attrs::Local));
             }
             self.check_block(block_items);
         }
@@ -868,10 +868,8 @@ impl TypeChecker {
             }
             _ => (),
         }
-        self.symbols.insert(
-            name.to_string(),
-            (Type::Int, Attrs::Static { init, global }),
-        );
+        self.symbols
+            .insert(*name, (Type::Int, Attrs::Static { init, global }));
     }
 
     fn check_block_var_decl(
@@ -893,7 +891,7 @@ impl TypeChecker {
                     }
                 } else {
                     self.symbols.insert(
-                        name.to_string(),
+                        *name,
                         (
                             Type::Int,
                             Attrs::Static {
@@ -911,7 +909,7 @@ impl TypeChecker {
                     _ => panic!("Non-constant initialization of variable {}", name),
                 };
                 self.symbols.insert(
-                    name.to_string(),
+                    *name,
                     (
                         Type::Int,
                         Attrs::Static {
@@ -922,8 +920,7 @@ impl TypeChecker {
                 );
             }
             None => {
-                self.symbols
-                    .insert(name.to_string(), (Type::Int, Attrs::Local));
+                self.symbols.insert(*name, (Type::Int, Attrs::Local));
                 if let Some(expr) = init {
                     self.check_expr(expr)
                 };

@@ -1,0 +1,6 @@
+- proper error handling: don't panic, return Results
+- after that, implement more resilient parsing for multiple parse errors
+- more resilient semantic analysis
+- comment code throughout
+- check to see: can two different functions have the same label name?
+- update pretty printer to work better with Symbols

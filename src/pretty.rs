@@ -100,7 +100,7 @@ fn statement_str(stmt: &Statement, indent: usize) -> String {
         }
         Statement::For(label, init, incr, post, stmt) => {
             let init = match init {
-                ForInit::Decl(var) => var.name.clone(),
+                ForInit::Decl(var) => var.name.to_string(),
                 ForInit::Exp(expr) => expr_str(expr),
                 ForInit::Null => "".to_string(),
             };
