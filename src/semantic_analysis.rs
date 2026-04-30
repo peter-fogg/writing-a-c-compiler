@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 
 use crate::interner::{Interner, Symbol};
 use crate::parser::{
-    BlockItem, CaseInfo, Declaration, Expression, ForInit, Function, Program, Statement,
+    BlockItem, CaseInfo, Const, Declaration, Expression, ForInit, Function, Program, Statement,
     StorageClass, Var,
 };
 
@@ -48,6 +48,7 @@ impl ResolveState<'_> {
             name,
             init,
             storage,
+            ty,
         }: Var,
     ) -> Var {
         self.put_env(
@@ -61,6 +62,7 @@ impl ResolveState<'_> {
             name,
             init,
             storage,
+            ty,
         }
     }
 
@@ -70,6 +72,7 @@ impl ResolveState<'_> {
             name,
             init,
             storage,
+            ty,
         }: Var,
     ) -> Var {
         if self.current_scope_has(&name)
@@ -88,6 +91,7 @@ impl ResolveState<'_> {
                 name,
                 storage,
                 init,
+                ty,
             }
         } else {
             let new_name = self.new_temp(name);
@@ -102,6 +106,7 @@ impl ResolveState<'_> {
                 name: new_name,
                 init,
                 storage,
+                ty,
             }
         }
     }
@@ -126,6 +131,7 @@ impl ResolveState<'_> {
             params,
             body,
             storage,
+            ty,
         }: Function,
         scope: DeclScope,
     ) -> Function {
@@ -170,6 +176,7 @@ impl ResolveState<'_> {
             params: new_params,
             body,
             storage,
+            ty,
         }
     }
 
@@ -316,6 +323,7 @@ impl ResolveState<'_> {
                     panic!("Undeclared function {}", name);
                 }
             }
+            Expression::Cast(ty, expr) => Expression::Cast(ty, Box::new(self.expression(*expr))),
         }
     }
 
@@ -472,6 +480,7 @@ fn label_loops(
         body,
         params,
         storage,
+        ty,
     }: Function,
     interner: &mut Interner,
 ) -> Function {
@@ -480,6 +489,7 @@ fn label_loops(
         body: body.map(|body| Labeller::new(interner).label_block(body, None, None, name)),
         params,
         storage,
+        ty,
     }
 }
 
@@ -631,6 +641,17 @@ fn gather_block(block_items: &mut Vec<BlockItem>, mut cases: Option<&mut Vec<Cas
     }
 }
 
+// Return the actual compile-time value of a constant, since we need
+// to compare these in cases to make sure we don't have
+// duplicates. This returns i64 because any int or long must fit into
+// that value.
+fn actual_value(c: Const) -> i64 {
+    match c {
+        Const::Int(n) => n as i64,
+        Const::Long(n) => n,
+    }
+}
+
 fn gather_statement(stmt: &mut Statement, mut cases: Option<&mut Vec<CaseInfo>>) {
     match stmt {
         Statement::If(_, if_stmt, else_stmt) => {
@@ -655,9 +676,10 @@ fn gather_statement(stmt: &mut Statement, mut cases: Option<&mut Vec<CaseInfo>>)
             match expr {
                 Expression::Constant(n) if cases.is_some() => {
                     let c = cases.unwrap();
-                    if c.iter()
-                        .any(|ci| matches!(ci, CaseInfo::Case { expr: m, label: _ } if n == m))
-                    {
+                    if c.iter().any(|ci| {
+                        matches!(ci, CaseInfo::Case { expr: m, label: _ } if actual_value(*n) == actual_value(*m)
+                        )
+                    }) {
                         panic!("Duplicate case in switch statement");
                     }
                     c.push(CaseInfo::Case {
@@ -732,6 +754,7 @@ impl TypeChecker {
             params,
             body,
             storage,
+            ty,
         }: &Function,
     ) {
         let mut already_defined = false;
@@ -848,10 +871,11 @@ impl TypeChecker {
             name,
             init,
             storage,
+            ty,
         }: &Var,
     ) {
         let mut init = match init {
-            Some(Expression::Constant(n)) => InitValue::Initial(*n),
+            Some(Expression::Constant(n)) => todo!(), //InitValue::Initial(*n),
             None => {
                 if *storage == Some(StorageClass::Extern) {
                     InitValue::NoInit
@@ -902,6 +926,7 @@ impl TypeChecker {
             name,
             init,
             storage,
+            ty,
         }: &Var,
     ) {
         match storage {
@@ -928,7 +953,7 @@ impl TypeChecker {
             }
             Some(StorageClass::Static) => {
                 let init = match init {
-                    Some(Expression::Constant(n)) => InitValue::Initial(*n),
+                    Some(Expression::Constant(n)) => todo!(), //InitValue::Initial(*n),
                     None => InitValue::Initial(0),
                     _ => panic!("Non-constant initialization of variable {}", name),
                 };
@@ -1011,6 +1036,7 @@ impl TypeChecker {
                     name
                 ),
             },
+            Expression::Cast(_, _) => todo!(),
         }
     }
 }

@@ -19,13 +19,15 @@ fn func_decl_str(
         params,
         body,
         storage,
+        ty,
     }: &Function,
     indent: usize,
 ) -> String {
     let header = format!(
-        "{}{} Function {} ({:?})",
+        "{}{} {:?} Function {} ({:?})",
         "  ".repeat(indent),
         storage_str(storage),
+        ty,
         name,
         params
     );
@@ -148,13 +150,15 @@ fn var_decl_str(
         name,
         init,
         storage,
+        ty,
     }: &Var,
     indent: usize,
 ) -> String {
     format!(
-        "{}VarDecl({}, {}, {})",
+        "{}VarDecl({}, {:?}, {}, {})",
         "  ".repeat(indent),
         storage_str(storage),
+        ty,
         name,
         init.as_ref().map(expr_str).unwrap_or("()".to_string())
     )
@@ -189,6 +193,9 @@ fn expr_str(expr: &Expression) -> String {
                 func,
                 exprs.iter().map(expr_str).collect::<Vec<_>>()
             )
+        }
+        Expression::Cast(ty, expr) => {
+            format!("Cast({:?}, {})", ty, expr_str(expr))
         }
     }
 }

@@ -193,6 +193,7 @@ impl<'a> TackifyState<'a> {
                 name,
                 init,
                 storage: None,
+                ty,
             }) => {
                 if let Some(expr) = init {
                     let expr = self.tackify_expr(expr, instrs);
@@ -331,7 +332,7 @@ impl<'a> TackifyState<'a> {
                 for case in cases {
                     match case {
                         CaseInfo::Case { expr: n, label } => {
-                            let val = Val::Constant(*n);
+                            let val = todo!(); //Val::Constant(*n);
                             let binop = BinaryOp::Equals;
                             let dst = Val::Var(self.new_temp("case_tmp"));
                             instrs.push(Instr::Binary {
@@ -366,7 +367,7 @@ impl<'a> TackifyState<'a> {
 
     fn tackify_expr(&mut self, expr: Expression, instrs: &mut Vec<Instr>) -> Val {
         match expr {
-            Expression::Constant(n) => Val::Constant(n),
+            Expression::Constant(n) => todo!(), //Val::Constant(n),
             Expression::Unary(un_op, inner) => {
                 let src = self.tackify_expr(*inner, instrs);
                 let dst_name = self.new_temp("tmp");
@@ -575,6 +576,7 @@ impl<'a> TackifyState<'a> {
 
                 dst
             }
+            Expression::Cast(_, _) => todo!(),
         }
     }
 

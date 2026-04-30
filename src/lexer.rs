@@ -12,7 +12,8 @@ pub enum TokenKind<'a> {
     LBrace,
     RBrace,
     Return,
-    Constant(i32),
+    Constant(&'a str),
+    LongConstant(&'a str),
     Semicolon,
     Tilde,
     Plus,
@@ -63,6 +64,7 @@ pub enum TokenKind<'a> {
     Comma,
     Static,
     Extern,
+    Long,
 }
 
 #[derive(Debug, Clone, PartialEq, Copy)]
@@ -97,14 +99,25 @@ impl<'a> Lexer<'a> {
             self.next_char();
             (end, c) = *self.peek().unwrap();
         }
-
         // Unwrap is safe here because this range has just been proven as only made of digits
-        let n = self.source.get(start..end).unwrap().parse::<i32>().unwrap();
-        Token {
-            kind: TokenKind::Constant(n),
-            start,
-            end,
-            line: self.line,
+        let digits = self.source.get(start..end).unwrap();
+        match c {
+            'l' | 'L' => {
+                // advance to chomp the L suffix
+                self.next_char();
+                Token {
+                    kind: TokenKind::LongConstant(digits),
+                    start,
+                    end: end + 1,
+                    line: self.line,
+                }
+            }
+            _ => Token {
+                kind: TokenKind::Constant(digits),
+                start,
+                end,
+                line: self.line,
+            },
         }
     }
 
@@ -135,6 +148,7 @@ impl<'a> Lexer<'a> {
             "default" => TokenKind::Default,
             "static" => TokenKind::Static,
             "extern" => TokenKind::Extern,
+            "long" => TokenKind::Long,
             _ => TokenKind::Id(id),
         };
 

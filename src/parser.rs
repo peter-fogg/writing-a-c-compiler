@@ -1,3 +1,5 @@
+use std::fmt::{Display, Error, Formatter};
+
 use crate::interner::{Interner, Symbol};
 use crate::lexer::{Lexer, Token, TokenKind};
 
@@ -57,9 +59,24 @@ pub enum Crement {
     Dec,
 }
 
+#[derive(Debug, PartialEq, Clone, Copy)]
+pub enum Const {
+    Int(i32),
+    Long(i64),
+}
+
+impl Display for Const {
+    fn fmt(&self, f: &mut Formatter) -> Result<(), Error> {
+        match self {
+            Const::Int(n) => write!(f, "{}", n),
+            Const::Long(n) => write!(f, "{}", n),
+        }
+    }
+}
+
 #[derive(Debug, PartialEq, Clone)]
 pub enum Expression {
-    Constant(i32),
+    Constant(Const),
     Unary(UnaryOperator, Box<Expression>),
     Binary(BinaryOperator, Box<Expression>, Box<Expression>),
     Compound(CompoundOperator, Box<Expression>, Box<Expression>),
@@ -68,6 +85,7 @@ pub enum Expression {
     Assign(Box<Expression>, Box<Expression>),
     Conditional(Box<Expression>, Box<Expression>, Box<Expression>),
     Call(Symbol, Vec<Expression>),
+    Cast(Type, Box<Expression>),
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -102,7 +120,7 @@ pub enum Statement {
 
 #[derive(Debug, PartialEq, Clone)]
 pub enum CaseInfo {
-    Case { expr: i32, label: Symbol },
+    Case { expr: Const, label: Symbol },
     Default { label: Symbol },
 }
 
@@ -126,10 +144,18 @@ pub enum BlockItem {
 }
 
 #[derive(Debug, PartialEq, Clone)]
+pub enum Type {
+    Int,
+    Long,
+    Fun(Vec<Type>, Box<Type>),
+}
+
+#[derive(Debug, PartialEq, Clone)]
 pub struct Var {
     pub name: Symbol,
     pub init: Option<Expression>,
     pub storage: Option<StorageClass>,
+    pub ty: Type,
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -138,6 +164,7 @@ pub struct Function {
     pub params: Vec<Symbol>,
     pub body: Option<Vec<BlockItem>>,
     pub storage: Option<StorageClass>,
+    pub ty: Type,
 }
 
 #[derive(Debug, PartialEq, Clone, Copy)]
@@ -207,7 +234,7 @@ impl<'a> Parser<'a> {
         }
     }
 
-    pub fn next(&mut self) -> Token<'a> {
+    pub fn next(&self) -> Token<'a> {
         match self.next_token {
             None => Self::eof_token(),
             Some(t) => t,
@@ -272,18 +299,19 @@ impl<'a> Parser<'a> {
             self.advance();
         }
 
-        let storage = self.storage_class(storage_and_type);
+        let (ty, storage) = self.type_and_storage_class(storage_and_type);
         if self.next().kind == TokenKind::LParen {
-            Declaration::Func(self.func_declaration(storage))
+            Declaration::Func(self.func_declaration(ty, storage))
         } else {
-            Declaration::Var(self.var_declaration(storage))
+            Declaration::Var(self.var_declaration(ty, storage))
         }
     }
 
-    fn func_declaration(&mut self, storage: Option<StorageClass>) -> Function {
+    fn func_declaration(&mut self, ret_ty: Type, storage: Option<StorageClass>) -> Function {
         let name = self.name();
         self.consume(TokenKind::LParen);
         let params = self.param_list();
+        let (param_names, param_tys) = params.into_iter().unzip();
         self.consume(TokenKind::RParen);
         let body = if self.current().kind == TokenKind::LBrace {
             Some(self.block())
@@ -295,12 +323,13 @@ impl<'a> Parser<'a> {
         Function {
             name,
             body,
-            params,
+            params: param_names,
             storage,
+            ty: Type::Fun(param_tys, Box::new(ret_ty)),
         }
     }
 
-    fn var_declaration(&mut self, storage: Option<StorageClass>) -> Var {
+    fn var_declaration(&mut self, ty: Type, storage: Option<StorageClass>) -> Var {
         let name = self.name();
         let init = match self.current().kind {
             TokenKind::Equals => {
@@ -316,33 +345,56 @@ impl<'a> Parser<'a> {
             name,
             init,
             storage,
+            ty,
         }
     }
 
-    fn storage_class(&self, specifiers: Vec<Token>) -> Option<StorageClass> {
+    fn type_and_storage_class(&self, specifiers: Vec<Token>) -> (Type, Option<StorageClass>) {
         let mut storage_classes = vec![];
-        let mut has_type = false;
+        let mut types = vec![];
         for specifier in specifiers {
             match specifier.kind {
-                TokenKind::Int => has_type = true,
+                TokenKind::Int => types.push(Type::Int),
+                TokenKind::Long => types.push(Type::Long),
                 TokenKind::Static | TokenKind::Extern => storage_classes.push(specifier.kind),
                 _ => self.report_error(format!("Bad declaration specifier {:?}", specifier)),
             }
         }
 
-        if !has_type {
-            self.report_error("Missing type specifier".to_string());
-        }
-
-        match &storage_classes[..] {
+        let ty = Self::consolidate_type_specifier(types);
+        let storage_class = match &storage_classes[..] {
             [] => None,
             [TokenKind::Extern] => Some(StorageClass::Extern),
             [TokenKind::Static] => Some(StorageClass::Static),
             l => self.report_error(format!("Too many storage classes {:?}", l)),
+        };
+
+        (ty, storage_class)
+    }
+
+    fn consolidate_type_specifier(types: Vec<Type>) -> Type {
+        match &types[..] {
+            [Type::Int] => Type::Int,
+            [Type::Long] => Type::Long,
+            [Type::Int, Type::Long] | [Type::Long, Type::Int] => Type::Long,
+            t => panic!("Bad type specifier {:?}", t),
         }
     }
 
-    fn param_list(&mut self) -> Vec<Symbol> {
+    fn type_specifier(&mut self) -> Type {
+        let mut types = vec![];
+        while Self::is_type(self.current()) {
+            match self.current().kind {
+                TokenKind::Int => types.push(Type::Int),
+                TokenKind::Long => types.push(Type::Long),
+                _ => unreachable!(),
+            }
+            self.advance();
+        }
+        Self::consolidate_type_specifier(types)
+    }
+
+    fn param_list(&mut self) -> Vec<(Symbol, Type)> {
         let mut params = vec![];
         if self.current().kind == TokenKind::Void {
             self.consume(TokenKind::Void);
@@ -350,8 +402,8 @@ impl<'a> Parser<'a> {
         }
 
         while {
-            self.consume(TokenKind::Int);
-            params.push(self.name());
+            let ty = self.type_specifier();
+            params.push((self.name(), ty));
 
             let comma = self.current().kind == TokenKind::Comma;
             if comma {
@@ -543,12 +595,21 @@ impl<'a> Parser<'a> {
     }
 
     fn constant(&mut self) -> Expression {
-        let n = match self.current().kind {
-            TokenKind::Constant(n) => n,
+        let c = match self.current().kind {
+            TokenKind::Constant(n) => match n.parse::<i32>() {
+                Ok(n) => Const::Int(n),
+                Err(_) => Const::Long(
+                    n.parse::<i64>()
+                        .expect("Promoted from 32 to 64 bits and it still doesn't work!"),
+                ),
+            },
+            TokenKind::LongConstant(n) => {
+                Const::Long(n.parse::<i64>().expect("Error parsing 64-bit int"))
+            }
             err => self.report_error(format!("bad numeric parse: {:?}", err)),
         };
         self.advance();
-        Expression::Constant(n)
+        Expression::Constant(c)
     }
 
     fn get_prec(t: Token) -> Prec {
@@ -653,59 +714,66 @@ impl<'a> Parser<'a> {
     }
 
     fn is_postfix_op(token: &Token) -> bool {
-        [TokenKind::DoublePlus, TokenKind::DoubleMinus].contains(&token.kind)
+        matches!(&token.kind, TokenKind::DoublePlus | TokenKind::DoubleMinus)
     }
 
     fn is_compound_op(token: &Token) -> bool {
-        [
-            TokenKind::PlusEquals,
-            TokenKind::MinusEquals,
-            TokenKind::StarEquals,
-            TokenKind::SlashEquals,
-            TokenKind::PercentEquals,
-            TokenKind::AmpersandEquals,
-            TokenKind::PipeEquals,
-            TokenKind::CaretEquals,
-            TokenKind::DoubleLAngleEquals,
-            TokenKind::DoubleRAngleEquals,
-        ]
-        .contains(&token.kind)
+        matches!(
+            &token.kind,
+            TokenKind::PlusEquals
+                | TokenKind::MinusEquals
+                | TokenKind::StarEquals
+                | TokenKind::SlashEquals
+                | TokenKind::PercentEquals
+                | TokenKind::AmpersandEquals
+                | TokenKind::PipeEquals
+                | TokenKind::CaretEquals
+                | TokenKind::DoubleLAngleEquals
+                | TokenKind::DoubleRAngleEquals
+        )
     }
 
     fn is_binary_op(token: &Token) -> bool {
-        [
-            TokenKind::Plus,
-            TokenKind::Minus,
-            TokenKind::Star,
-            TokenKind::Slash,
-            TokenKind::Percent,
-            TokenKind::Ampersand,
-            TokenKind::Pipe,
-            TokenKind::Caret,
-            TokenKind::DoubleLAngle,
-            TokenKind::DoubleRAngle,
-            TokenKind::BangEquals,
-            TokenKind::DoubleEquals,
-            TokenKind::DoubleAmpersand,
-            TokenKind::DoublePipe,
-            TokenKind::RAngle,
-            TokenKind::RAngleEquals,
-            TokenKind::LAngle,
-            TokenKind::LAngleEquals,
-            TokenKind::Equals,
-            TokenKind::Huh,
-        ]
-        .contains(&token.kind)
+        matches!(
+            &token.kind,
+            TokenKind::Plus
+                | TokenKind::Minus
+                | TokenKind::Star
+                | TokenKind::Slash
+                | TokenKind::Percent
+                | TokenKind::Ampersand
+                | TokenKind::Pipe
+                | TokenKind::Caret
+                | TokenKind::DoubleLAngle
+                | TokenKind::DoubleRAngle
+                | TokenKind::BangEquals
+                | TokenKind::DoubleEquals
+                | TokenKind::DoubleAmpersand
+                | TokenKind::DoublePipe
+                | TokenKind::RAngle
+                | TokenKind::RAngleEquals
+                | TokenKind::LAngle
+                | TokenKind::LAngleEquals
+                | TokenKind::Equals
+                | TokenKind::Huh
+        )
     }
 
     fn factor(&mut self) -> Expression {
         match self.current().kind {
-            TokenKind::Constant(_) => self.constant(),
+            TokenKind::LongConstant(_) | TokenKind::Constant(_) => self.constant(),
             TokenKind::LParen => {
                 self.consume(TokenKind::LParen);
-                let sub_expr = self.expression(Prec::Bottom);
-                self.consume(TokenKind::RParen);
-                sub_expr
+                if Self::is_type(self.current()) {
+                    let ty = self.type_specifier();
+                    self.consume(TokenKind::RParen);
+                    let expr = self.factor();
+                    Expression::Cast(ty, Box::new(expr))
+                } else {
+                    let sub_expr = self.expression(Prec::Bottom);
+                    self.consume(TokenKind::RParen);
+                    sub_expr
+                }
             }
             TokenKind::Tilde | TokenKind::Minus | TokenKind::Bang => {
                 let un_op = self.unary_op();
@@ -813,11 +881,15 @@ impl<'a> Parser<'a> {
         unop
     }
 
-    fn is_specifier(t: Token) -> bool {
+    fn is_specifier(t: Token<'a>) -> bool {
         matches!(
             t.kind,
-            TokenKind::Int | TokenKind::Extern | TokenKind::Static
+            TokenKind::Long | TokenKind::Int | TokenKind::Extern | TokenKind::Static
         )
+    }
+
+    fn is_type(t: Token<'a>) -> bool {
+        matches!(t.kind, TokenKind::Long | TokenKind::Int)
     }
 
     fn report_error(&self, message: String) -> ! {
