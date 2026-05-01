@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 
 use crate::interner::Symbol;
-use crate::semantic_analysis::{Attrs, Type};
 use crate::tacky::{self, Tacky, TopLevel};
+use crate::typecheck::{Attrs, Type};
 
 #[derive(Debug, PartialEq, Clone)]
 pub enum Operand {

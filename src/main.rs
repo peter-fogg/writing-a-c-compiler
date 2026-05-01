@@ -11,6 +11,7 @@ mod parser;
 mod pretty;
 mod semantic_analysis;
 mod tacky;
+mod typecheck;
 
 fn main() {
     let mut args = env::args().collect::<Vec<String>>();

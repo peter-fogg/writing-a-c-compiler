@@ -5,7 +5,7 @@ use crate::parser::{
     BinaryOperator, BlockItem, CaseInfo, CompoundOperator, Crement, Declaration, Expression,
     Fixity, ForInit, Function, Program, Statement, UnaryOperator, Var,
 };
-use crate::semantic_analysis::{Attrs, InitValue, Type};
+use crate::typecheck::{Attrs, InitValue, Type};
 
 #[derive(Debug, PartialEq, Clone, Copy)]
 pub enum UnaryOp {
