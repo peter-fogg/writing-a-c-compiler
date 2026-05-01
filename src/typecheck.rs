@@ -1,9 +1,9 @@
 use std::collections::HashMap;
 
-use crate::interner::Symbol;
-use crate::parser::{
+use crate::ast::{
     BlockItem, Declaration, Expression, ForInit, Function, Statement, StorageClass, Var,
 };
+use crate::interner::Symbol;
 
 #[derive(PartialEq, Eq, Debug, Copy, Clone)]
 pub enum Type {

@@ -1,4 +1,7 @@
-use crate::parser::*;
+use crate::ast::{
+    BlockItem, CaseInfo, Const, Declaration, Expression, ForInit, Function, Program, Statement,
+    StorageClass, Var,
+};
 
 pub fn print_program(Program(decls): &Program) {
     for decl in decls {

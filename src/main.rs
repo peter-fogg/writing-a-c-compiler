@@ -3,6 +3,7 @@ use std::{env, fs, path};
 use parser::Parser;
 use semantic_analysis::analyze;
 
+mod ast;
 mod codegen;
 mod emit;
 mod interner;

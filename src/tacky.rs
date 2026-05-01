@@ -1,10 +1,10 @@
 use std::collections::HashMap;
 
-use crate::interner::{Interner, Symbol};
-use crate::parser::{
+use crate::ast::{
     BinaryOperator, BlockItem, CaseInfo, CompoundOperator, Crement, Declaration, Expression,
     Fixity, ForInit, Function, Program, Statement, UnaryOperator, Var,
 };
+use crate::interner::{Interner, Symbol};
 use crate::typecheck::{Attrs, InitValue, Type};
 
 #[derive(Debug, PartialEq, Clone, Copy)]
