@@ -474,11 +474,12 @@ impl TypeChecker {
                     );
                 }
 
+                let left_ty = get_type(&typed_lhs);
                 let ty = get_common_type(get_type(&typed_lhs), get_type(&typed_rhs));
-                let cast_lhs = cast(typed_lhs, &ty);
-                let cast_rhs = cast(typed_rhs, &ty);
+                let cast_lhs = cast(typed_lhs.clone(), &ty);
+                let cast_rhs = cast(typed_rhs.clone(), &ty);
 
-                let result_ty = match binop {
+                match binop {
                     BinaryOperator::Add
                     | BinaryOperator::Subtract
                     | BinaryOperator::Multiply
@@ -486,11 +487,25 @@ impl TypeChecker {
                     | BinaryOperator::Remainder
                     | BinaryOperator::BitAnd
                     | BinaryOperator::BitOr
-                    | BinaryOperator::BitXOr => ty,
-                    _ => Type::Int,
-                };
-
-                TypedExpression::Binary(result_ty, binop, Box::new(cast_lhs), Box::new(cast_rhs))
+                    | BinaryOperator::BitXOr => {
+                        let ty = get_common_type(get_type(&typed_lhs), get_type(&typed_rhs));
+                        TypedExpression::Binary(ty, binop, Box::new(cast_lhs), Box::new(cast_rhs))
+                    }
+                    BinaryOperator::ShiftLeft | BinaryOperator::ShiftRight => {
+                        TypedExpression::Binary(
+                            left_ty.clone(),
+                            binop,
+                            Box::new(typed_lhs),
+                            Box::new(typed_rhs),
+                        )
+                    }
+                    _ => TypedExpression::Binary(
+                        Type::Int,
+                        binop,
+                        Box::new(cast_lhs),
+                        Box::new(cast_rhs),
+                    ),
+                }
             }
             Expression::Assign(lhs, rhs) => {
                 let typed_lhs = self.check_expr(*lhs);
