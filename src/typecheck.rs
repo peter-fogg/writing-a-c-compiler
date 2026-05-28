@@ -483,7 +483,10 @@ impl TypeChecker {
                     | BinaryOperator::Subtract
                     | BinaryOperator::Multiply
                     | BinaryOperator::Divide
-                    | BinaryOperator::Remainder => ty,
+                    | BinaryOperator::Remainder
+                    | BinaryOperator::BitAnd
+                    | BinaryOperator::BitOr
+                    | BinaryOperator::BitXOr => ty,
                     _ => Type::Int,
                 };
 
