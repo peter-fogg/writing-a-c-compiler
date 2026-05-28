@@ -667,12 +667,9 @@ fn gather_statement(stmt: &mut Statement<Expression>, mut cases: Option<&mut Vec
         Statement::While(_, _, stmt) => gather_statement(stmt, cases),
         Statement::For(_, _, _, _, body) => gather_statement(body, cases),
         Statement::DoWhile(_, body, _) => gather_statement(body, cases),
-        Statement::Switch {
-            label: _,
-            expr: _,
-            body,
-            cases,
-        } => gather_statement(body, Some(cases)),
+        Statement::Switch { body, cases, .. } => {
+            gather_statement(body, Some(cases));
+        }
         Statement::Case(label, expr, stmt) => {
             gather_statement(stmt, cases.as_deref_mut());
             match expr {
