@@ -4,3 +4,8 @@
 - more resilient semantic analysis
 - comment code throughout
 - update pretty printer to work better with Symbols
+- include span info in AST before semantic analysis so that we can
+  report better errors
+- implement function to guess which parameter is missing/added in incorrect function calls. Levenshtein distance on parameter types? sure i guess
+- add interner to typecheck in order to resolve symbols to proper variable names
+- separate Type into another place... typechecking module maybe?

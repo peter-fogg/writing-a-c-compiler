@@ -2,10 +2,10 @@ use std::collections::{HashMap, HashSet};
 
 use crate::ast::{
     BlockItem, CaseInfo, Const, Declaration, Expression, ForInit, Function, Program, Statement,
-    StorageClass, Var,
+    StorageClass, Type, Var,
 };
 use crate::interner::{Interner, Symbol};
-use crate::typecheck::{Attrs, Type, TypeChecker};
+use crate::typecheck::{Attrs, TypeChecker, TypedExpression};
 
 #[derive(PartialEq, Eq, Debug, Copy, Clone)]
 enum Linkage {
@@ -32,7 +32,7 @@ struct ResolveState<'a> {
 }
 
 impl ResolveState<'_> {
-    pub fn block(&mut self, block_items: Vec<BlockItem>) -> Vec<BlockItem> {
+    pub fn block(&mut self, block_items: Vec<BlockItem<Expression>>) -> Vec<BlockItem<Expression>> {
         let mut resolved_items = Vec::new();
         for block_item in block_items {
             match block_item {
@@ -50,8 +50,8 @@ impl ResolveState<'_> {
             init,
             storage,
             ty,
-        }: Var,
-    ) -> Var {
+        }: Var<Expression>,
+    ) -> Var<Expression> {
         self.put_env(
             name,
             ResolutionInfo {
@@ -74,8 +74,8 @@ impl ResolveState<'_> {
             init,
             storage,
             ty,
-        }: Var,
-    ) -> Var {
+        }: Var<Expression>,
+    ) -> Var<Expression> {
         if self.current_scope_has(&name)
             && let Some(ResolutionInfo { name, linkage }) = self.get_env(&name)
             && !(*linkage != Linkage::None && storage == Some(StorageClass::Extern))
@@ -112,7 +112,7 @@ impl ResolveState<'_> {
         }
     }
 
-    fn param(&mut self, name: Symbol) -> Symbol {
+    fn param(&mut self, (name, ty): (Symbol, Type)) -> (Symbol, Type) {
         if self.current_scope_has(&name) {
             panic!("Duplicate variable name {}", name);
         }
@@ -122,7 +122,7 @@ impl ResolveState<'_> {
             linkage: Linkage::None,
         };
         self.put_env(name, res_info);
-        new_name
+        (new_name, ty)
     }
 
     fn func_declaration(
@@ -133,9 +133,9 @@ impl ResolveState<'_> {
             body,
             storage,
             ty,
-        }: Function,
+        }: Function<Expression>,
         scope: DeclScope,
-    ) -> Function {
+    ) -> Function<Expression> {
         if scope == DeclScope::Block && storage == Some(StorageClass::Static) {
             panic!(
                 "Illegal static function declaration {} at block scope",
@@ -181,7 +181,7 @@ impl ResolveState<'_> {
         }
     }
 
-    pub fn declaration(&mut self, decl: Declaration) -> Declaration {
+    pub fn declaration(&mut self, decl: Declaration<Expression>) -> Declaration<Expression> {
         match decl {
             Declaration::Var(var) => Declaration::Var(self.local_var_declaration(var)),
             Declaration::Func(func) => {
@@ -190,7 +190,7 @@ impl ResolveState<'_> {
         }
     }
 
-    pub fn statement(&mut self, stmt: Statement) -> Statement {
+    pub fn statement(&mut self, stmt: Statement<Expression>) -> Statement<Expression> {
         match stmt {
             Statement::Null => Statement::Null,
             Statement::Return(expr) => Statement::Return(self.expression(expr)),
@@ -355,9 +355,9 @@ impl ResolveState<'_> {
 }
 
 pub fn analyze(
-    program: Program,
+    program: Program<Expression>,
     interner: &mut Interner,
-) -> (Program, HashMap<Symbol, (Type, Attrs)>) {
+) -> (Program<TypedExpression>, HashMap<Symbol, (Type, Attrs)>) {
     let declarations = program.0;
     let mut analyzed = Vec::with_capacity(declarations.len());
     let mut resolve_state = ResolveState {
@@ -392,12 +392,10 @@ pub fn analyze(
         }
     }
 
-    let symbols = TypeChecker::check_program(&analyzed);
-
-    (Program(analyzed), symbols)
+    TypeChecker::check_program(analyzed)
 }
 
-fn check_labels(Function { body, .. }: &Function) {
+fn check_labels(Function { body, .. }: &Function<Expression>) {
     let mut label_ids = HashSet::new();
     let mut gotos = HashSet::new();
     if let Some(b) = body {
@@ -412,7 +410,7 @@ fn check_labels(Function { body, .. }: &Function) {
 }
 
 fn check_block_label(
-    block_items: &Vec<BlockItem>,
+    block_items: &Vec<BlockItem<Expression>>,
     label_ids: &mut HashSet<Symbol>,
     gotos: &mut HashSet<Symbol>,
 ) {
@@ -424,7 +422,7 @@ fn check_block_label(
 }
 
 fn check_statement_label(
-    label: &Statement,
+    label: &Statement<Expression>,
     label_ids: &mut HashSet<Symbol>,
     gotos: &mut HashSet<Symbol>,
 ) {
@@ -482,9 +480,9 @@ fn label_loops(
         params,
         storage,
         ty,
-    }: Function,
+    }: Function<Expression>,
     interner: &mut Interner,
-) -> Function {
+) -> Function<Expression> {
     Function {
         name,
         body: body.map(|body| Labeller::new(interner).label_block(body, None, None, name)),
@@ -501,11 +499,11 @@ impl<'a> Labeller<'a> {
 
     fn label_block(
         &mut self,
-        block_items: Vec<BlockItem>,
+        block_items: Vec<BlockItem<Expression>>,
         break_label: Option<Symbol>,
         continue_label: Option<Symbol>,
         fn_name: Symbol,
-    ) -> Vec<BlockItem> {
+    ) -> Vec<BlockItem<Expression>> {
         let mut labeled = Vec::with_capacity(block_items.len());
         for block_item in block_items {
             match block_item {
@@ -523,11 +521,11 @@ impl<'a> Labeller<'a> {
 
     fn label_statement(
         &mut self,
-        stmt: Statement,
+        stmt: Statement<Expression>,
         break_label: Option<Symbol>,
         continue_label: Option<Symbol>,
         fn_name: Symbol,
-    ) -> Statement {
+    ) -> Statement<Expression> {
         match stmt {
             stmt @ (Statement::Return(_) | Statement::Exp(_) | Statement::Null) => stmt,
             /*
@@ -634,7 +632,10 @@ impl<'a> Labeller<'a> {
     }
 }
 
-fn gather_block(block_items: &mut Vec<BlockItem>, mut cases: Option<&mut Vec<CaseInfo>>) {
+fn gather_block(
+    block_items: &mut Vec<BlockItem<Expression>>,
+    mut cases: Option<&mut Vec<CaseInfo>>,
+) {
     for block_item in block_items {
         if let BlockItem::S(stmt) = block_item {
             gather_statement(stmt, cases.as_deref_mut()); // TODO bad
@@ -653,7 +654,7 @@ fn actual_value(c: Const) -> i64 {
     }
 }
 
-fn gather_statement(stmt: &mut Statement, mut cases: Option<&mut Vec<CaseInfo>>) {
+fn gather_statement(stmt: &mut Statement<Expression>, mut cases: Option<&mut Vec<CaseInfo>>) {
     match stmt {
         Statement::If(_, if_stmt, else_stmt) => {
             gather_statement(if_stmt, cases.as_deref_mut());

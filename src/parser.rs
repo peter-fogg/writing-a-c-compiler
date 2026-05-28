@@ -65,7 +65,7 @@ impl<'a> Parser<'a> {
         }
     }
 
-    pub fn parse(&mut self) -> Program {
+    pub fn parse(&mut self) -> Program<Expression> {
         let mut decls = vec![];
         while self.current().kind != TokenKind::Eof {
             decls.push(self.declaration())
@@ -74,7 +74,7 @@ impl<'a> Parser<'a> {
         Program(decls)
     }
 
-    fn block(&mut self) -> Vec<BlockItem> {
+    fn block(&mut self) -> Vec<BlockItem<Expression>> {
         self.consume(TokenKind::LBrace);
 
         let mut block_items = Vec::new();
@@ -98,7 +98,7 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn declaration(&mut self) -> Declaration {
+    fn declaration(&mut self) -> Declaration<Expression> {
         let mut storage_and_type = vec![];
         while Self::is_specifier(self.current()) {
             storage_and_type.push(self.current());
@@ -113,11 +113,15 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn func_declaration(&mut self, ret_ty: Type, storage: Option<StorageClass>) -> Function {
+    fn func_declaration(
+        &mut self,
+        ret_ty: Type,
+        storage: Option<StorageClass>,
+    ) -> Function<Expression> {
         let name = self.name();
         self.consume(TokenKind::LParen);
         let params = self.param_list();
-        let (param_names, param_tys) = params.into_iter().unzip();
+        let (_, param_tys): (Vec<_>, Vec<_>) = params.clone().into_iter().unzip();
         self.consume(TokenKind::RParen);
         let body = if self.current().kind == TokenKind::LBrace {
             Some(self.block())
@@ -129,13 +133,13 @@ impl<'a> Parser<'a> {
         Function {
             name,
             body,
-            params: param_names,
+            params,
             storage,
-            ty: Type::Fun(param_tys, Box::new(ret_ty)),
+            ty: Type::Fun(param_tys.clone(), Box::new(ret_ty)),
         }
     }
 
-    fn var_declaration(&mut self, ty: Type, storage: Option<StorageClass>) -> Var {
+    fn var_declaration(&mut self, ty: Type, storage: Option<StorageClass>) -> Var<Expression> {
         let name = self.name();
         let init = match self.current().kind {
             TokenKind::Equals => {
@@ -221,7 +225,7 @@ impl<'a> Parser<'a> {
         params
     }
 
-    fn block_item(&mut self) -> BlockItem {
+    fn block_item(&mut self) -> BlockItem<Expression> {
         match self.current() {
             t if Self::is_specifier(t) => BlockItem::D(self.declaration()),
             Token {
@@ -232,7 +236,7 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn statement(&mut self) -> Statement {
+    fn statement(&mut self) -> Statement<Expression> {
         match self.current().kind {
             TokenKind::If => {
                 self.consume(TokenKind::If);

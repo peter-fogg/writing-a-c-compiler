@@ -65,12 +65,12 @@ fn compile_file(text: String, assembly_path: &path::Path, rest_args: &[String]) 
         println!("{:?}", pretty::print_program(&parsed));
         std::process::exit(0);
     }
-    let (analyzed, symbols) = analyze(parsed, &mut interner);
+    let (analyzed, mut symbols) = analyze(parsed, &mut interner);
     if rest_args.iter().any(|s| s == "--validate") {
         println!("{:?}", analyzed.0);
         std::process::exit(0);
     }
-    let tackified = tacky::emit_tacky(analyzed, &symbols, &mut interner);
+    let tackified = tacky::emit_tacky(analyzed, &mut symbols, &mut interner);
     if rest_args.iter().any(|s| s == "--tacky") {
         println!("{:?}", tackified);
         std::process::exit(0);

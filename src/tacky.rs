@@ -1,11 +1,11 @@
 use std::collections::HashMap;
 
 use crate::ast::{
-    BinaryOperator, BlockItem, CaseInfo, CompoundOperator, Crement, Declaration, Expression,
-    Fixity, ForInit, Function, Program, Statement, UnaryOperator, Var,
+    BinaryOperator, BlockItem, CaseInfo, CompoundOperator, Const, Crement, Declaration, Fixity,
+    ForInit, Function, Program, Statement, Type, UnaryOperator, Var,
 };
 use crate::interner::{Interner, Symbol};
-use crate::typecheck::{Attrs, InitValue, Type};
+use crate::typecheck::{Attrs, InitValue, StaticInit, TypedExpression, get_type};
 
 #[derive(Debug, PartialEq, Clone, Copy)]
 pub enum UnaryOp {
@@ -34,9 +34,9 @@ pub enum BinaryOp {
     NotEquals,
 }
 
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Copy, Clone)]
 pub enum Val {
-    Constant(i32),
+    Constant(Const),
     Var(Symbol),
 }
 
@@ -75,20 +75,29 @@ pub enum Instr {
         params: Vec<Val>,
         dst: Val,
     },
+    SignExtend {
+        src: Val,
+        dst: Val,
+    },
+    Truncate {
+        src: Val,
+        dst: Val,
+    },
 }
 
 #[derive(Debug, PartialEq, Clone)]
 pub enum TopLevel {
     TackyFunction {
         name: Symbol,
-        params: Vec<Symbol>,
+        params: Vec<(Symbol, Type)>,
         instructions: Vec<Instr>,
         global: bool,
     },
     StaticVar {
         name: Symbol,
         global: bool,
-        init: i32,
+        ty: Type,
+        init: StaticInit,
     },
 }
 use TopLevel::*;
@@ -97,13 +106,13 @@ pub type Tacky = Vec<TopLevel>;
 
 struct TackifyState<'a> {
     count: u8,
-    symbols: &'a HashMap<Symbol, (Type, Attrs)>,
+    symbols: &'a mut HashMap<Symbol, (Type, Attrs)>,
     interner: &'a mut Interner,
 }
 
 pub fn emit_tacky(
-    program: Program,
-    symbols: &HashMap<Symbol, (Type, Attrs)>,
+    program: Program<TypedExpression>,
+    symbols: &mut HashMap<Symbol, (Type, Attrs)>,
     interner: &mut Interner,
 ) -> Tacky {
     let declarations = program.0;
@@ -126,7 +135,10 @@ pub fn emit_tacky(
 }
 
 impl<'a> TackifyState<'a> {
-    pub fn new(symbols: &'a HashMap<Symbol, (Type, Attrs)>, interner: &'a mut Interner) -> Self {
+    pub fn new(
+        symbols: &'a mut HashMap<Symbol, (Type, Attrs)>,
+        interner: &'a mut Interner,
+    ) -> Self {
         Self {
             count: 0,
             symbols,
@@ -135,18 +147,24 @@ impl<'a> TackifyState<'a> {
     }
 
     fn tackify_symbols(&mut self, program: &mut Tacky) {
-        for (name, (_, attrs)) in self.symbols.iter() {
+        for (name, (ty, attrs)) in self.symbols.iter() {
             if let Attrs::Static { init, global } = attrs {
                 match init {
                     InitValue::Initial(n) => program.push(StaticVar {
                         name: *name,
                         global: *global,
                         init: *n,
+                        ty: ty.clone(),
                     }),
                     InitValue::Tentative => program.push(StaticVar {
                         name: *name,
                         global: *global,
-                        init: 0,
+                        init: if *ty == Type::Long {
+                            StaticInit::Long(0)
+                        } else {
+                            StaticInit::Int(0)
+                        },
+                        ty: ty.clone(),
                     }),
                     InitValue::NoInit => (),
                 }
@@ -158,13 +176,13 @@ impl<'a> TackifyState<'a> {
         &mut self,
         Function {
             name, params, body, ..
-        }: Function,
+        }: Function<TypedExpression>,
         program: &mut Tacky,
     ) {
         if let Some(body) = body {
             let mut instructions = Vec::new();
             self.tackify_block(body, &mut instructions);
-            instructions.push(Instr::Return(Val::Constant(0)));
+            instructions.push(Instr::Return(Val::Constant(Const::Int(0))));
             let global = match self.symbols.get(&name) {
                 Some((_, Attrs::Fun { global, .. })) => *global,
                 _ => false,
@@ -178,7 +196,11 @@ impl<'a> TackifyState<'a> {
         }
     }
 
-    fn tackify_block(&mut self, block_items: Vec<BlockItem>, instrs: &mut Vec<Instr>) {
+    fn tackify_block(
+        &mut self,
+        block_items: Vec<BlockItem<TypedExpression>>,
+        instrs: &mut Vec<Instr>,
+    ) {
         for block_item in block_items {
             match block_item {
                 BlockItem::D(decl) => self.tackify_declaration(decl, instrs),
@@ -187,13 +209,13 @@ impl<'a> TackifyState<'a> {
         }
     }
 
-    fn tackify_declaration(&mut self, decl: Declaration, instrs: &mut Vec<Instr>) {
+    fn tackify_declaration(&mut self, decl: Declaration<TypedExpression>, instrs: &mut Vec<Instr>) {
         match decl {
             Declaration::Var(Var {
                 name,
                 init,
                 storage: None,
-                ty,
+                ty: _,
             }) => {
                 if let Some(expr) = init {
                     let expr = self.tackify_expr(expr, instrs);
@@ -208,7 +230,7 @@ impl<'a> TackifyState<'a> {
         }
     }
 
-    fn tackify_statement(&mut self, stmt: Statement, instrs: &mut Vec<Instr>) {
+    fn tackify_statement(&mut self, stmt: Statement<TypedExpression>, instrs: &mut Vec<Instr>) {
         match stmt {
             Statement::Null => (),
             Statement::Return(expr) => {
@@ -332,14 +354,19 @@ impl<'a> TackifyState<'a> {
                 for case in cases {
                     match case {
                         CaseInfo::Case { expr: n, label } => {
-                            let val = todo!(); //Val::Constant(*n);
+                            let val = Val::Constant(*n);
                             let binop = BinaryOp::Equals;
-                            let dst = Val::Var(self.new_temp("case_tmp"));
+                            let ty = if matches!(n, Const::Int(_)) {
+                                Type::Int
+                            } else {
+                                Type::Long
+                            };
+                            let dst = self.new_var(ty, "case_tmp");
                             instrs.push(Instr::Binary {
                                 binop,
                                 src1: val,
-                                src2: result.clone(),
-                                dst: dst.clone(),
+                                src2: result,
+                                dst,
                             });
                             instrs.push(Instr::JumpIfNotZero {
                                 condition: dst,
@@ -365,26 +392,21 @@ impl<'a> TackifyState<'a> {
         }
     }
 
-    fn tackify_expr(&mut self, expr: Expression, instrs: &mut Vec<Instr>) -> Val {
+    fn tackify_expr(&mut self, expr: TypedExpression, instrs: &mut Vec<Instr>) -> Val {
         match expr {
-            Expression::Constant(n) => todo!(), //Val::Constant(n),
-            Expression::Unary(un_op, inner) => {
+            TypedExpression::Constant(_ty, n) => Val::Constant(n),
+            TypedExpression::Unary(ty, un_op, inner) => {
                 let src = self.tackify_expr(*inner, instrs);
-                let dst_name = self.new_temp("tmp");
-                let dst = Val::Var(dst_name);
+                let dst = self.new_var(ty, "unop");
                 let op = Self::convert_unop(un_op);
-                let new_unop = Instr::Unary {
-                    unop: op,
-                    src,
-                    dst: dst.clone(),
-                };
+                let new_unop = Instr::Unary { unop: op, src, dst };
                 instrs.push(new_unop);
                 dst
             }
-            Expression::Binary(BinaryOperator::And, lhs, rhs) => {
+            TypedExpression::Binary(ty, BinaryOperator::And, lhs, rhs) => {
                 let end_label = self.new_temp("and_end");
                 let false_label = self.new_temp("and_false");
-                let ret_val = Val::Var(self.new_temp("and_result"));
+                let ret_val = self.new_var(ty, "and_result");
 
                 let lhs = self.tackify_expr(*lhs, instrs);
 
@@ -399,24 +421,24 @@ impl<'a> TackifyState<'a> {
                         target: false_label,
                     },
                     Instr::Copy {
-                        src: Val::Constant(1),
-                        dst: ret_val.clone(),
+                        src: Val::Constant(Const::Int(1)),
+                        dst: ret_val,
                     },
                     Instr::Jump { target: end_label },
                     Instr::Label(false_label),
                     Instr::Copy {
-                        src: Val::Constant(0),
-                        dst: ret_val.clone(),
+                        src: Val::Constant(Const::Int(0)),
+                        dst: ret_val,
                     },
                     Instr::Label(end_label),
                 ]);
 
                 ret_val
             }
-            Expression::Binary(BinaryOperator::Or, lhs, rhs) => {
+            TypedExpression::Binary(ty, BinaryOperator::Or, lhs, rhs) => {
                 let end_label = self.new_temp("or_end");
                 let true_label = self.new_temp("or_true");
-                let ret_val = Val::Var(self.new_temp("or_result"));
+                let ret_val = self.new_var(ty, "or_result");
 
                 let lhs = self.tackify_expr(*lhs, instrs);
                 instrs.push(Instr::JumpIfNotZero {
@@ -430,24 +452,24 @@ impl<'a> TackifyState<'a> {
                         target: true_label,
                     },
                     Instr::Copy {
-                        src: Val::Constant(0),
-                        dst: ret_val.clone(),
+                        src: Val::Constant(Const::Int(0)),
+                        dst: ret_val,
                     },
                     Instr::Jump { target: end_label },
                     Instr::Label(true_label),
                     Instr::Copy {
-                        src: Val::Constant(1),
-                        dst: ret_val.clone(),
+                        src: Val::Constant(Const::Int(1)),
+                        dst: ret_val,
                     },
                     Instr::Label(end_label),
                 ]);
 
                 ret_val
             }
-            Expression::Binary(binop, lhs, rhs) => {
+            TypedExpression::Binary(ty, binop, lhs, rhs) => {
                 let src1 = self.tackify_expr(*lhs, instrs);
                 let src2 = self.tackify_expr(*rhs, instrs);
-                let dst = Val::Var(self.new_temp("tmp"));
+                let dst = self.new_var(ty, "binop");
 
                 let op = Self::convert_binop(binop);
 
@@ -455,17 +477,17 @@ impl<'a> TackifyState<'a> {
                     binop: op,
                     src1,
                     src2,
-                    dst: dst.clone(),
+                    dst,
                 };
 
                 instrs.push(new_binop);
 
                 dst
             }
-            Expression::Compound(compound_op, lhs, rhs) => {
+            TypedExpression::Compound(ty, compound_op, lhs, rhs) => {
                 let op = Self::convert_compound_op(compound_op);
 
-                let Expression::Var(id) = *lhs.clone() else {
+                let TypedExpression::Var(_, id) = *lhs.clone() else {
                     panic!(
                         "Bad assignment made it through semantic analysis: {:?}",
                         *lhs
@@ -474,13 +496,13 @@ impl<'a> TackifyState<'a> {
 
                 let src1 = self.tackify_expr(*lhs, instrs);
                 let src2 = self.tackify_expr(*rhs, instrs);
-                let tmp_dst = Val::Var(self.new_temp("c_tmp"));
+                let tmp_dst = self.new_var(ty, "c_tmp");
 
                 instrs.push(Instr::Binary {
                     binop: op,
                     src1,
                     src2,
-                    dst: tmp_dst.clone(),
+                    dst: tmp_dst,
                 });
 
                 instrs.push(Instr::Copy {
@@ -490,11 +512,11 @@ impl<'a> TackifyState<'a> {
 
                 Val::Var(id)
             }
-            Expression::Var(id) => Val::Var(id),
-            Expression::Assign(lhs, expr) => {
+            TypedExpression::Var(_ty, id) => Val::Var(id),
+            TypedExpression::Assign(_ty, lhs, expr) => {
                 let result = self.tackify_expr(*expr, instrs);
 
-                let Expression::Var(id) = *lhs else {
+                let TypedExpression::Var(_, id) = *lhs else {
                     panic!(
                         "Bad assignment made it through semantic analysis: {:?}",
                         *lhs
@@ -507,7 +529,7 @@ impl<'a> TackifyState<'a> {
                 });
                 Val::Var(id)
             }
-            Expression::Crement(fixity, crement, expr) => {
+            TypedExpression::Crement(ty, fixity, crement, expr) => {
                 let op = Self::convert_crement(crement);
 
                 let name = if crement == Crement::Inc {
@@ -515,30 +537,27 @@ impl<'a> TackifyState<'a> {
                 } else {
                     "dec"
                 };
-                let tmp_dst = Val::Var(self.new_temp(name));
+                let tmp_dst = self.new_var(ty, name);
 
                 let src = self.tackify_expr(*expr, instrs);
 
                 instrs.extend(vec![
-                    Instr::Copy {
-                        src: src.clone(),
-                        dst: tmp_dst.clone(),
-                    },
+                    Instr::Copy { src, dst: tmp_dst },
                     Instr::Binary {
                         binop: op,
-                        src1: tmp_dst.clone(),
-                        src2: Val::Constant(1),
-                        dst: src.clone(),
+                        src1: tmp_dst,
+                        src2: Val::Constant(Const::Int(1)),
+                        dst: src,
                     },
                 ]);
 
                 if fixity == Fixity::Pre { src } else { tmp_dst }
             }
-            Expression::Conditional(cond_expr, if_expr, else_expr) => {
+            TypedExpression::Conditional(ty, cond_expr, if_expr, else_expr) => {
                 let cond_expr = self.tackify_expr(*cond_expr, instrs);
                 let end_label = self.new_temp("cond_end");
                 let else_label = self.new_temp("cond_else");
-                let cond_dst = Val::Var(self.new_temp("cond_result"));
+                let cond_dst = self.new_var(ty, "cond_result");
                 instrs.push(Instr::JumpIfZero {
                     condition: cond_expr,
                     target: else_label,
@@ -547,7 +566,7 @@ impl<'a> TackifyState<'a> {
                 instrs.extend(vec![
                     Instr::Copy {
                         src: if_expr,
-                        dst: cond_dst.clone(),
+                        dst: cond_dst,
                     },
                     Instr::Jump { target: end_label },
                     Instr::Label(else_label),
@@ -556,27 +575,36 @@ impl<'a> TackifyState<'a> {
                 instrs.extend(vec![
                     Instr::Copy {
                         src: else_expr,
-                        dst: cond_dst.clone(),
+                        dst: cond_dst,
                     },
                     Instr::Label(end_label),
                 ]);
                 cond_dst
             }
-            Expression::Call(name, param_exprs) => {
+            TypedExpression::Call(ty, name, param_exprs) => {
                 let mut params = Vec::with_capacity(param_exprs.len());
                 for param in param_exprs {
                     params.push(self.tackify_expr(param, instrs));
                 }
-                let dst = Val::Var(self.new_temp("call"));
-                instrs.push(Instr::Call {
-                    name,
-                    params,
-                    dst: dst.clone(),
-                });
+                let dst = self.new_var(ty, "call");
+                instrs.push(Instr::Call { name, params, dst });
 
                 dst
             }
-            Expression::Cast(_, _) => todo!(),
+            TypedExpression::Cast(ty, expr) => {
+                let src = self.tackify_expr(*expr.clone(), instrs);
+                if ty == *get_type(&expr) {
+                    return src;
+                }
+                let dst = self.new_var(ty.clone(), "cast");
+
+                if ty == Type::Long {
+                    instrs.push(Instr::SignExtend { src, dst });
+                } else {
+                    instrs.push(Instr::Truncate { src, dst })
+                }
+                dst
+            }
         }
     }
 
@@ -584,6 +612,12 @@ impl<'a> TackifyState<'a> {
         let count = self.count;
         self.count += 1;
         self.interner.intern(format!("{}.{}", var_name, count))
+    }
+
+    fn new_var(&mut self, ty: Type, var_name: &'static str) -> Val {
+        let name = self.new_temp(var_name);
+        self.symbols.insert(name, (ty, Attrs::Local));
+        Val::Var(name)
     }
 
     fn block_label(&mut self, label_kind: &'static str, block: Symbol) -> Symbol {

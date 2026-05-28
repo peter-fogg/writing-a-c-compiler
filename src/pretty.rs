@@ -1,29 +1,32 @@
+use std::fmt;
+
 use crate::ast::{
-    BlockItem, CaseInfo, Const, Declaration, Expression, ForInit, Function, Program, Statement,
-    StorageClass, Var,
+    BlockItem, Declaration, Expression, ForInit, Function, Program, Statement, StorageClass, Var,
 };
 
-pub fn print_program(Program(decls): &Program) {
+use crate::typecheck::TypedExpression;
+
+pub fn print_program<E: fmt::Display>(Program(decls): &Program<E>) {
     for decl in decls {
         println!("{}", decl_str(decl, 0));
     }
 }
 
-fn decl_str(decl: &Declaration, indent: usize) -> String {
+fn decl_str<E: fmt::Display>(decl: &Declaration<E>, indent: usize) -> String {
     match decl {
         Declaration::Func(func) => func_decl_str(func, indent),
         Declaration::Var(var) => var_decl_str(var, indent),
     }
 }
 
-fn func_decl_str(
+fn func_decl_str<E: fmt::Display>(
     Function {
         name,
         params,
         body,
         storage,
         ty,
-    }: &Function,
+    }: &Function<E>,
     indent: usize,
 ) -> String {
     let header = format!(
@@ -47,19 +50,19 @@ fn func_decl_str(
     format!("{}\n{}", header, body)
 }
 
-fn block_item_str(block_item: &BlockItem, indent: usize) -> String {
+fn block_item_str<E: fmt::Display>(block_item: &BlockItem<E>, indent: usize) -> String {
     match block_item {
         BlockItem::D(decl) => decl_str(decl, indent),
         BlockItem::S(stmt) => statement_str(stmt, indent),
     }
 }
 
-fn statement_str(stmt: &Statement, indent: usize) -> String {
+fn statement_str<E: fmt::Display>(stmt: &Statement<E>, indent: usize) -> String {
     let indent_str = "  ".repeat(indent);
     let next_indent_str = "  ".repeat(indent + 1);
     let prettied = match stmt {
-        Statement::Return(expr) => format!("Return({})", expr_str(expr)),
-        Statement::Exp(expr) => format!("ExprStmt({})", expr_str(expr)),
+        Statement::Return(expr) => format!("Return({})", expr),
+        Statement::Exp(expr) => format!("ExprStmt({})", expr),
         Statement::If(cond, if_stmt, else_stmt) => {
             let else_str = match else_stmt {
                 None => format!("{}()", next_indent_str),
@@ -68,7 +71,7 @@ fn statement_str(stmt: &Statement, indent: usize) -> String {
             format!(
                 "If(\n{}{},\n{}\n{}\n{})",
                 next_indent_str,
-                expr_str(cond),
+                cond,
                 statement_str(if_stmt, indent + 1),
                 else_str,
                 indent_str,
@@ -89,7 +92,7 @@ fn statement_str(stmt: &Statement, indent: usize) -> String {
             format!(
                 "While({}, {}\n{}\n{})",
                 label,
-                expr_str(cond),
+                cond,
                 statement_str(stmt, indent + 1),
                 indent_str,
             )
@@ -100,17 +103,23 @@ fn statement_str(stmt: &Statement, indent: usize) -> String {
                 label,
                 statement_str(stmt, indent + 1),
                 next_indent_str,
-                expr_str(cond),
+                cond,
             )
         }
         Statement::For(label, init, incr, post, stmt) => {
             let init = match init {
                 ForInit::Decl(var) => var.name.to_string(),
-                ForInit::Exp(expr) => expr_str(expr),
+                ForInit::Exp(expr) => format!("{}", expr),
                 ForInit::Null => "".to_string(),
             };
-            let incr = incr.as_ref().map(expr_str).unwrap_or("".to_string());
-            let post = post.as_ref().map(expr_str).unwrap_or("".to_string());
+            let incr = incr
+                .as_ref()
+                .map(|expr| format!("{}", expr))
+                .unwrap_or("".to_string());
+            let post = post
+                .as_ref()
+                .map(|expr| format!("{}", expr))
+                .unwrap_or("".to_string());
 
             format!(
                 "For({} ({}; {}; {}))\n{}",
@@ -130,14 +139,14 @@ fn statement_str(stmt: &Statement, indent: usize) -> String {
             format!(
                 "Switch({}, ({}))\n{}",
                 label,
-                expr_str(expr),
+                expr,
                 statement_str(body, indent + 1)
             )
         }
         Statement::Case(label, expr, stmt) => format!(
             "Case({}, {})\n{}",
             label,
-            expr_str(expr),
+            expr,
             statement_str(stmt, indent + 1)
         ),
         Statement::Default(label, stmt) => {
@@ -148,13 +157,13 @@ fn statement_str(stmt: &Statement, indent: usize) -> String {
     format!("{}{}", indent_str, prettied)
 }
 
-fn var_decl_str(
+fn var_decl_str<E: fmt::Display>(
     Var {
         name,
         init,
         storage,
         ty,
-    }: &Var,
+    }: &Var<E>,
     indent: usize,
 ) -> String {
     format!(
@@ -163,43 +172,73 @@ fn var_decl_str(
         storage_str(storage),
         ty,
         name,
-        init.as_ref().map(expr_str).unwrap_or("()".to_string())
+        init.as_ref()
+            .map(|expr_str| format!("{}", expr_str))
+            .unwrap_or("".to_string())
     )
 }
 
-fn expr_str(expr: &Expression) -> String {
-    match expr {
-        Expression::Constant(n) => n.to_string(),
-        Expression::Unary(unop, expr) => format!("{:?}({})", unop, expr_str(expr)),
-        Expression::Binary(binop, lhs, rhs) => {
-            format!("{:?}({}, {})", binop, expr_str(lhs), expr_str(rhs))
-        }
-        Expression::Compound(compound, lhs, rhs) => {
-            format!("{:?}({}, {})", compound, expr_str(lhs), expr_str(rhs))
-        }
-        Expression::Crement(fix, crement, expr) => {
-            format!("{:?}({:?}, {})", fix, crement, expr_str(expr))
-        }
-        Expression::Var(v) => v.to_string(),
-        Expression::Assign(lhs, rhs) => {
-            format!("Assign({}, {})", expr_str(lhs), expr_str(rhs))
-        }
-        Expression::Conditional(cond, if_expr, else_expr) => format!(
-            "Conditional({}) if {} else {}",
-            expr_str(cond),
-            expr_str(if_expr),
-            expr_str(else_expr)
-        ),
-        Expression::Call(func, exprs) => {
-            format!(
-                "Call({}, {:?})",
-                func,
-                exprs.iter().map(expr_str).collect::<Vec<_>>()
-            )
-        }
-        Expression::Cast(ty, expr) => {
-            format!("Cast({:?}, {})", ty, expr_str(expr))
-        }
+impl fmt::Display for TypedExpression {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        let s = match self {
+            TypedExpression::Constant(ty, n) => format!("{:?} {}", ty, n),
+            TypedExpression::Unary(_, unop, expr) => format!("{:?}({})", unop, expr),
+            TypedExpression::Binary(_, binop, lhs, rhs) => {
+                format!("{:?}({}, {})", binop, lhs, rhs)
+            }
+            TypedExpression::Compound(_, compound, lhs, rhs) => {
+                format!("{:?}({}, {})", compound, lhs, rhs)
+            }
+            TypedExpression::Crement(_, fix, crement, expr) => {
+                format!("{:?}({:?}, {})", fix, crement, expr)
+            }
+            TypedExpression::Var(ty, v) => format!("{:?} {}", ty, v),
+            TypedExpression::Assign(_, lhs, rhs) => {
+                format!("Assign({}, {})", lhs, rhs)
+            }
+            TypedExpression::Conditional(_, cond, if_expr, else_expr) => {
+                format!("Conditional({}) if {} else {}", cond, if_expr, else_expr)
+            }
+            TypedExpression::Call(_, func, exprs) => {
+                format!("Call({}, {:?})", func, exprs)
+            }
+            TypedExpression::Cast(ty, expr) => {
+                format!("Cast({:?}, {})", ty, expr)
+            }
+        };
+        write!(f, "{}", s)
+    }
+}
+
+impl fmt::Display for Expression {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        let s = match self {
+            Expression::Constant(n) => n.to_string(),
+            Expression::Unary(unop, expr) => format!("{:?}({})", unop, expr),
+            Expression::Binary(binop, lhs, rhs) => {
+                format!("{:?}({}, {})", binop, lhs, rhs)
+            }
+            Expression::Compound(compound, lhs, rhs) => {
+                format!("{:?}({}, {})", compound, lhs, rhs)
+            }
+            Expression::Crement(fix, crement, expr) => {
+                format!("{:?}({:?}, {})", fix, crement, expr)
+            }
+            Expression::Var(v) => v.to_string(),
+            Expression::Assign(lhs, rhs) => {
+                format!("Assign({}, {})", lhs, rhs)
+            }
+            Expression::Conditional(cond, if_expr, else_expr) => {
+                format!("Conditional({}) if {} else {}", cond, if_expr, else_expr)
+            }
+            Expression::Call(func, exprs) => {
+                format!("Call({}, {:?})", func, exprs)
+            }
+            Expression::Cast(ty, expr) => {
+                format!("Cast({:?}, {})", ty, expr)
+            }
+        };
+        write!(f, "{}", s)
     }
 }
 

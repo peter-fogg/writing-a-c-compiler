@@ -2,9 +2,10 @@ use std::io::Result;
 use std::{fs::File, io::Write};
 
 use crate::codegen::{
-    AsmTopLevel, Assembly, BinaryOp, CondCode, Instr, Operand, Register, UnaryOp,
+    AsmTopLevel, AsmType, Assembly, BinaryOp, CondCode, Instr, Operand, Register, UnaryOp,
 };
 use crate::interner::Interner;
+use crate::typecheck::StaticInit;
 
 pub fn emit(asm: Assembly, interner: &Interner, mut file: File) -> Result<()> {
     for top_level in asm {
@@ -30,25 +31,35 @@ fn emit_top_level(top_level: AsmTopLevel, interner: &Interner, file: &mut File) 
                 emit_instr(instr, interner, file)?;
             }
         }
-        AsmTopLevel::AsmStatic { name, global, init } => {
+        AsmTopLevel::AsmStatic {
+            alignment,
+            name,
+            global,
+            init,
+        } => {
             if global {
                 file.write_all(format!("\t.globl _{}\n", interner.get_symbol(name)).as_bytes())?;
             }
-            if init == 0 {
+            if matches!(init, StaticInit::Int(0) | StaticInit::Long(0)) {
                 file.write_all("\t.bss\n".as_bytes())?;
             } else {
                 file.write_all("\t.data\n".as_bytes())?;
             }
-            file.write_all("\t.balign 4\n".as_bytes())?;
+            file.write_all(format!("\t.balign {alignment}\n").as_bytes())?;
             file.write_all(format!("_{}:\n", interner.get_symbol(name)).as_bytes())?;
-            if init == 0 {
-                file.write_all("\t.zero 4\n".as_bytes())?;
-            } else {
-                file.write_all(format!("\t.long {}\n", init).as_bytes())?;
-            }
+            file.write_all(format!("\t{}\n", format_static_init(init)).as_bytes())?;
         }
     }
     Ok(())
+}
+
+fn format_static_init(init: StaticInit) -> String {
+    match init {
+        StaticInit::Int(0) => String::from(".zero 4"),
+        StaticInit::Int(n) => format!(".long {n}"),
+        StaticInit::Long(0) => String::from(".zero 8"),
+        StaticInit::Long(n) => format!(".quad {n}"),
+    }
 }
 
 fn emit_instr(instr: Instr, interner: &Interner, file: &mut File) -> Result<()> {
@@ -58,47 +69,61 @@ fn emit_instr(instr: Instr, interner: &Interner, file: &mut File) -> Result<()> 
             file.write_all("\tpopq\t%rbp\n".as_bytes())?;
             file.write_all("\tret\n".as_bytes())?;
         }
-        Instr::Mov { src, dst } => file.write_all(
+        Instr::Mov { ty, src, dst } => file.write_all(
             format!(
-                "\tmovl\t{}, {}\n",
-                write_operand(src, 4, interner),
-                write_operand(dst, 4, interner)
+                "\tmov{}\t{}, {}\n",
+                type_suffix(ty),
+                write_operand(src, bytes(ty), interner),
+                write_operand(dst, bytes(ty), interner)
             )
             .as_bytes(),
         )?,
-        Instr::AllocateStack(n) => file.write_all(format!("\tsubq\t${}, %rsp\n", n).as_bytes())?,
-        Instr::DeallocateStack(n) => {
-            file.write_all(format!("\taddq\t${}, %rsp\n", n).as_bytes())?
-        }
-        Instr::Unary { unop, dst: operand } => file.write_all(
+        Instr::Unary {
+            ty,
+            unop,
+            dst: operand,
+        } => file.write_all(
             format!(
                 "\t{}\t{}\n",
-                write_unop(unop),
-                write_operand(operand, 4, interner)
+                write_unop(unop, ty),
+                write_operand(operand, bytes(ty), interner)
             )
             .as_bytes(),
         )?,
-        Instr::Binary { binop, src, dst } => file.write_all(
+        Instr::Binary {
+            ty,
+            binop,
+            src,
+            dst,
+        } => file.write_all(
             format!(
                 "\t{}\t{}, {}\n",
-                write_binop(binop),
+                write_binop(binop, ty),
                 if matches!(binop, BinaryOp::ShiftLeft | BinaryOp::ShiftRight) {
                     write_operand(src, 1, interner)
                 } else {
-                    write_operand(src, 4, interner)
+                    write_operand(src, bytes(ty), interner)
                 },
-                write_operand(dst, 4, interner),
+                write_operand(dst, bytes(ty), interner),
             )
             .as_bytes(),
         )?,
-        Instr::IDiv(operand) => file
-            .write_all(format!("\tidivl\t{}\n", write_operand(operand, 4, interner)).as_bytes())?,
-        Instr::Cdq => file.write_all("\tcdq\n".as_bytes())?,
-        Instr::Cmp { lhs, rhs } => file.write_all(
+        Instr::IDiv(ty, operand) => file.write_all(
             format!(
-                "\tcmpl\t{}, {}\n",
-                write_operand(lhs, 4, interner),
-                write_operand(rhs, 4, interner)
+                "\tidiv{}\t{}\n",
+                type_suffix(ty),
+                write_operand(operand, bytes(ty), interner)
+            )
+            .as_bytes(),
+        )?,
+        Instr::Cdq(AsmType::Longword) => file.write_all("\tcdq\n".as_bytes())?,
+        Instr::Cdq(AsmType::Quadword) => file.write_all("\tcqo\n".as_bytes())?,
+        Instr::Cmp { ty, lhs, rhs } => file.write_all(
+            format!(
+                "\tcmp{}\t{}, {}\n",
+                type_suffix(ty),
+                write_operand(lhs, bytes(ty), interner),
+                write_operand(rhs, bytes(ty), interner)
             )
             .as_bytes(),
         )?,
@@ -131,8 +156,23 @@ fn emit_instr(instr: Instr, interner: &Interner, file: &mut File) -> Result<()> 
         Instr::Push(operand) => {
             file.write_all(format!("\tpushq {}\n", write_operand(operand, 8, interner)).as_bytes())?
         }
+        Instr::Movsx { src, dst } => file.write_all(
+            format!(
+                "\tmovslq\t{}, {}\n",
+                write_operand(src, 4, interner),
+                write_operand(dst, 8, interner)
+            )
+            .as_bytes(),
+        )?,
     }
     Ok(())
+}
+
+fn bytes(ty: AsmType) -> u8 {
+    match ty {
+        AsmType::Longword => 4,
+        AsmType::Quadword => 8,
+    }
 }
 
 fn write_cond_code(code: CondCode) -> String {
@@ -147,26 +187,37 @@ fn write_cond_code(code: CondCode) -> String {
     .to_string()
 }
 
-fn write_unop(unop: UnaryOp) -> String {
-    match unop {
-        UnaryOp::Neg => "negl",
-        UnaryOp::Not => "notl",
+fn write_unop(unop: UnaryOp, ty: AsmType) -> String {
+    let instr = match unop {
+        UnaryOp::Neg => "neg",
+        UnaryOp::Not => "not",
     }
-    .to_string()
+    .to_string();
+    let suffix = type_suffix(ty);
+    format!("{instr}{suffix}")
 }
 
-fn write_binop(binop: BinaryOp) -> String {
-    match binop {
-        BinaryOp::Add => "addl",
-        BinaryOp::Sub => "subl",
-        BinaryOp::Mult => "imull",
-        BinaryOp::BitAnd => "andl",
-        BinaryOp::BitOr => "orl",
-        BinaryOp::BitXOr => "xorl",
-        BinaryOp::ShiftLeft => "shll",
-        BinaryOp::ShiftRight => "sarl",
+fn type_suffix(ty: AsmType) -> &'static str {
+    match ty {
+        AsmType::Longword => "l",
+        AsmType::Quadword => "q",
     }
-    .to_string()
+}
+
+fn write_binop(binop: BinaryOp, ty: AsmType) -> String {
+    let instr = match binop {
+        BinaryOp::Add => "add",
+        BinaryOp::Sub => "sub",
+        BinaryOp::Mult => "imul",
+        BinaryOp::BitAnd => "and",
+        BinaryOp::BitOr => "or",
+        BinaryOp::BitXOr => "xor",
+        BinaryOp::ShiftLeft => "shl",
+        BinaryOp::ShiftRight => "sar",
+    }
+    .to_string();
+    let suffix = type_suffix(ty);
+    format!("{instr}{suffix}")
 }
 
 fn write_operand(op: Operand, bytes: u8, interner: &Interner) -> String {
@@ -186,6 +237,7 @@ fn write_register(reg: Register, bytes: u8) -> String {
             write_numeric_register(reg, bytes)
         }
         Register::DI | Register::SI => write_i_register(reg, bytes),
+        Register::SP => String::from("%rsp"),
     }
 }
 

@@ -88,32 +88,26 @@ pub enum Expression {
 }
 
 #[derive(Debug, PartialEq, Clone)]
-pub enum Statement {
-    Return(Expression),
-    Exp(Expression),
-    If(Expression, Box<Statement>, Option<Box<Statement>>),
+pub enum Statement<E> {
+    Return(E),
+    Exp(E),
+    If(E, Box<Statement<E>>, Option<Box<Statement<E>>>),
     Goto(Symbol),
-    Label(Symbol, Box<Statement>),
-    Compound(Vec<BlockItem>),
+    Label(Symbol, Box<Statement<E>>),
+    Compound(Vec<BlockItem<E>>),
     Break(Symbol),
     Continue(Symbol),
-    While(Symbol, Expression, Box<Statement>),
-    For(
-        Symbol,
-        ForInit,
-        Option<Expression>,
-        Option<Expression>,
-        Box<Statement>,
-    ),
-    DoWhile(Symbol, Box<Statement>, Expression),
+    While(Symbol, E, Box<Statement<E>>),
+    For(Symbol, ForInit<E>, Option<E>, Option<E>, Box<Statement<E>>),
+    DoWhile(Symbol, Box<Statement<E>>, E),
     Switch {
         label: Symbol,
-        expr: Expression,
-        body: Box<Statement>,
+        expr: E,
+        body: Box<Statement<E>>,
         cases: Vec<CaseInfo>,
     },
-    Case(Symbol, Expression, Box<Statement>),
-    Default(Symbol, Box<Statement>),
+    Case(Symbol, E, Box<Statement<E>>),
+    Default(Symbol, Box<Statement<E>>),
     Null,
 }
 
@@ -124,22 +118,22 @@ pub enum CaseInfo {
 }
 
 #[derive(Debug, PartialEq, Clone)]
-pub enum ForInit {
-    Decl(Var),
-    Exp(Expression),
+pub enum ForInit<E> {
+    Decl(Var<E>),
+    Exp(E),
     Null,
 }
 
 #[derive(Debug, PartialEq, Clone)]
-pub enum Declaration {
-    Var(Var),
-    Func(Function),
+pub enum Declaration<E> {
+    Var(Var<E>),
+    Func(Function<E>),
 }
 
 #[derive(Debug, PartialEq, Clone)]
-pub enum BlockItem {
-    S(Statement),
-    D(Declaration),
+pub enum BlockItem<E> {
+    S(Statement<E>),
+    D(Declaration<E>),
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -150,18 +144,18 @@ pub enum Type {
 }
 
 #[derive(Debug, PartialEq, Clone)]
-pub struct Var {
+pub struct Var<E> {
     pub name: Symbol,
-    pub init: Option<Expression>,
+    pub init: Option<E>,
     pub storage: Option<StorageClass>,
     pub ty: Type,
 }
 
 #[derive(Debug, PartialEq, Clone)]
-pub struct Function {
+pub struct Function<E> {
     pub name: Symbol,
-    pub params: Vec<Symbol>,
-    pub body: Option<Vec<BlockItem>>,
+    pub params: Vec<(Symbol, Type)>,
+    pub body: Option<Vec<BlockItem<E>>>,
     pub storage: Option<StorageClass>,
     pub ty: Type,
 }
@@ -193,4 +187,4 @@ pub enum Prec {
     Top,
 }
 
-pub struct Program(pub Vec<Declaration>);
+pub struct Program<E>(pub Vec<Declaration<E>>);
