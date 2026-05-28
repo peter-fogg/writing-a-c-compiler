@@ -2,11 +2,11 @@
 // Result<TypedExpression, SomeKindaError>. The file is short enough
 // that this will be a good test for the parser.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::ast::{
-    BinaryOperator, BlockItem, CompoundOperator, Const, Crement, Declaration, Expression, Fixity,
-    ForInit, Function, Program, Statement, StorageClass, Type, UnaryOperator, Var,
+    BinaryOperator, BlockItem, CaseInfo, CompoundOperator, Const, Crement, Declaration, Expression,
+    Fixity, ForInit, Function, Program, Statement, StorageClass, Type, UnaryOperator, Var,
 };
 use crate::interner::Symbol;
 #[derive(Debug, PartialEq, Clone)]
@@ -225,6 +225,11 @@ impl TypeChecker {
             } => {
                 let expr = self.check_expr(expr);
                 let body = Box::new(self.check_statement(current_fn, *body));
+                let cases = if *get_type(&expr) == Type::Long {
+                    convert_long_cases(&cases)
+                } else {
+                    convert_int_cases(&cases)
+                };
                 Statement::Switch {
                     expr,
                     body,
@@ -349,12 +354,12 @@ impl TypeChecker {
                 // Check for an earlier declaration with a different type
                 if let std::collections::hash_map::Entry::Vacant(e) = self.symbols.entry(name) {
                     e.insert((
-                            ty.clone(),
-                            Attrs::Static {
-                                init: InitValue::NoInit,
-                                global: true,
-                            },
-                        ));
+                        ty.clone(),
+                        Attrs::Static {
+                            init: InitValue::NoInit,
+                            global: true,
+                        },
+                    ));
                 } else {
                     self.check_redeclaration(&ty, &name);
                 }
@@ -495,15 +500,9 @@ impl TypeChecker {
             Expression::Compound(op, lhs, rhs) => {
                 let typed_lhs = self.check_expr(*lhs);
                 let typed_rhs = self.check_expr(*rhs);
-                let left_type = get_type(&typed_lhs);
-                let cast_rhs = cast(typed_rhs, left_type);
-
-                TypedExpression::Compound(
-                    left_type.clone(),
-                    op,
-                    Box::new(typed_lhs),
-                    Box::new(cast_rhs),
-                )
+                let ty = get_type(&typed_lhs);
+                let cast_rhs = cast(typed_rhs.clone(), &ty);
+                TypedExpression::Compound(ty.clone(), op, Box::new(typed_lhs), Box::new(cast_rhs))
             }
             Expression::Crement(fixity, crement, expr) => {
                 let typed_expr = self.check_expr(*expr);
@@ -590,4 +589,61 @@ fn cast(expr: TypedExpression, ty: &Type) -> TypedExpression {
     } else {
         TypedExpression::Cast(ty.clone(), Box::new(expr))
     }
+}
+// If a switch statement's controlling expression is a long, convert all its cases to longs
+fn convert_long_cases(cases: &Vec<CaseInfo>) -> Vec<CaseInfo> {
+    let mut new_cases = Vec::with_capacity(cases.len());
+    for case in cases {
+        if let CaseInfo::Case {
+            expr: Const::Int(n),
+            label,
+        } = case
+        {
+            new_cases.push(CaseInfo::Case {
+                expr: Const::Long(*n as i64),
+                label: *label,
+            });
+        } else {
+            new_cases.push(case.clone());
+        }
+    }
+    new_cases
+}
+
+// If a switch statement's controlling expression is an int, convert all its cases to ints, truncating them
+fn convert_int_cases(cases: &Vec<CaseInfo>) -> Vec<CaseInfo> {
+    let mut new_cases = Vec::with_capacity(cases.len());
+    // Check for duplicate values after conversions
+    let mut values = HashSet::with_capacity(cases.len());
+    for case in cases {
+        match case {
+            CaseInfo::Case {
+                expr: Const::Long(n),
+                label,
+            } => {
+                if values.contains(&(*n as i32)) {
+                    panic!("Duplicate case value after conversion {n}")
+                } else {
+                    values.insert(*n as i32);
+                }
+                new_cases.push(CaseInfo::Case {
+                    expr: Const::Int(*n as i32),
+                    label: *label,
+                });
+            }
+            CaseInfo::Case {
+                expr: Const::Int(n),
+                ..
+            } => {
+                if values.contains(n) {
+                    panic!("Duplicate case value after conversion {n}")
+                } else {
+                    values.insert(*n);
+                }
+                new_cases.push(case.clone());
+            }
+            _ => new_cases.push(case.clone()),
+        }
+    }
+    new_cases
 }

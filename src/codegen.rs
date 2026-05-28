@@ -306,8 +306,6 @@ fn assemble_instructions(
                 src2,
                 dst,
             } => {
-                // foo
-                //let ty = val_asm_type(&src2, symbols);
                 let ty = val_asm_type(&src1, symbols);
                 let dst = assemble_val(dst);
                 let src1 = assemble_val(src1);
