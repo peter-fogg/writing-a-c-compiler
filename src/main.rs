@@ -22,6 +22,7 @@ pub enum CompileError {
     Execute(String),
     Preprocess(String),
     FileRead(String),
+    Parse(String),
 }
 
 fn main() -> Result<(), CompileError> {
@@ -80,7 +81,7 @@ fn compile_file(
         println!("{:?}", lexed.collect::<Vec<_>>());
         std::process::exit(0);
     }
-    let parsed = Parser::new(lexed, &mut interner).parse();
+    let parsed = Parser::new(lexed, &mut interner).parse()?;
     if rest_args.iter().any(|s| s == "--parse") {
         println!("{:?}", pretty::print_program(&parsed));
         std::process::exit(0);

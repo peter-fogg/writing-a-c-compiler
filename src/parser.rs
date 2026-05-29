@@ -1,3 +1,4 @@
+use crate::CompileError;
 use crate::ast::*;
 use crate::interner::{Interner, Symbol};
 use crate::lexer::{Lexer, Token, TokenKind};
@@ -11,6 +12,8 @@ pub struct Parser<'a> {
 }
 
 const UNLABELLED: &str = "unlabelled";
+
+type ParseResult<T> = Result<T, CompileError>;
 
 impl<'a> Parser<'a> {
     pub fn new(mut tokens: Lexer<'a>, interner: &'a mut Interner) -> Self {
@@ -56,110 +59,120 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn consume(&mut self, kind: TokenKind<'a>) {
+    fn consume(&mut self, kind: TokenKind<'a>) -> ParseResult<()> {
         match self.current() {
             t if t.kind == kind => {
                 self.advance();
+                Ok(())
             }
-            t => self.report_error(format!("Expected {:?}, got {:?}", kind, t.kind)),
+            t => Err(self.report_error(format!("Expected {:?}, got {:?}", kind, t.kind))),
         }
     }
 
-    pub fn parse(&mut self) -> Program<Expression> {
+    pub fn parse(&mut self) -> ParseResult<Program<Expression>> {
         let mut decls = vec![];
         while self.current().kind != TokenKind::Eof {
-            decls.push(self.declaration())
+            decls.push(self.declaration()?)
         }
 
-        Program(decls)
+        Ok(Program(decls))
     }
 
-    fn block(&mut self) -> Vec<BlockItem<Expression>> {
-        self.consume(TokenKind::LBrace);
+    fn block(&mut self) -> ParseResult<Vec<BlockItem<Expression>>> {
+        self.consume(TokenKind::LBrace)?;
 
         let mut block_items = Vec::new();
 
         while self.current().kind != TokenKind::RBrace {
-            let item = self.block_item();
+            let item = self.block_item()?;
             block_items.push(item);
         }
 
-        self.consume(TokenKind::RBrace);
-        block_items
+        self.consume(TokenKind::RBrace)?;
+        Ok(block_items)
     }
 
-    fn name(&mut self) -> Symbol {
+    fn name(&mut self) -> ParseResult<Symbol> {
         match self.current().kind {
             TokenKind::Id(id) => {
                 self.advance();
-                self.interner.intern(id.into())
+                Ok(self.interner.intern(id.into()))
             }
-            t => self.report_error(format!("Expected identifier, got {:?}", t)),
+            t => Err(self.report_error(format!("Expected identifier, got {:?}", t))),
         }
     }
 
-    fn declaration(&mut self) -> Declaration<Expression> {
+    fn declaration(&mut self) -> ParseResult<Declaration<Expression>> {
         let mut storage_and_type = vec![];
         while Self::is_specifier(self.current()) {
             storage_and_type.push(self.current());
             self.advance();
         }
 
-        let (ty, storage) = self.type_and_storage_class(storage_and_type);
-        if self.next().kind == TokenKind::LParen {
-            Declaration::Func(self.func_declaration(ty, storage))
+        let (ty, storage) = self.type_and_storage_class(storage_and_type)?;
+        Ok(if self.next().kind == TokenKind::LParen {
+            Declaration::Func(self.func_declaration(ty, storage)?)
         } else {
-            Declaration::Var(self.var_declaration(ty, storage))
-        }
+            Declaration::Var(self.var_declaration(ty, storage)?)
+        })
     }
 
     fn func_declaration(
         &mut self,
         ret_ty: Type,
         storage: Option<StorageClass>,
-    ) -> Function<Expression> {
-        let name = self.name();
-        self.consume(TokenKind::LParen);
-        let params = self.param_list();
+    ) -> ParseResult<Function<Expression>> {
+        let name = self.name()?;
+        self.consume(TokenKind::LParen)?;
+        let params = self.param_list()?;
         let (_, param_tys): (Vec<_>, Vec<_>) = params.clone().into_iter().unzip();
-        self.consume(TokenKind::RParen);
+        self.consume(TokenKind::RParen)?;
         let body = if self.current().kind == TokenKind::LBrace {
-            Some(self.block())
+            Some(self.block()?)
         } else {
-            self.consume(TokenKind::Semicolon);
+            self.consume(TokenKind::Semicolon)?;
             None
         };
 
-        Function {
+        Ok(Function {
             name,
             body,
             params,
             storage,
             ty: Type::Fun(param_tys.clone(), Box::new(ret_ty)),
-        }
+        })
     }
 
-    fn var_declaration(&mut self, ty: Type, storage: Option<StorageClass>) -> Var<Expression> {
-        let name = self.name();
+    fn var_declaration(
+        &mut self,
+        ty: Type,
+        storage: Option<StorageClass>,
+    ) -> ParseResult<Var<Expression>> {
+        let name = self.name()?;
         let init = match self.current().kind {
             TokenKind::Equals => {
-                self.consume(TokenKind::Equals);
-                Some(self.expression(Prec::Bottom))
+                self.consume(TokenKind::Equals)?;
+                Some(self.expression(Prec::Bottom)?)
             }
             TokenKind::Semicolon => None,
-            kind => self.report_error(format!("Expected assignment or ;, got {:?}", kind)),
+            kind => {
+                return Err(self.report_error(format!("Expected assignment or ;, got {:?}", kind)));
+            }
         };
 
-        self.consume(TokenKind::Semicolon);
-        Var {
+        self.consume(TokenKind::Semicolon)?;
+        Ok(Var {
             name,
             init,
             storage,
             ty,
-        }
+        })
     }
 
-    fn type_and_storage_class(&self, specifiers: Vec<Token>) -> (Type, Option<StorageClass>) {
+    fn type_and_storage_class(
+        &self,
+        specifiers: Vec<Token>,
+    ) -> ParseResult<(Type, Option<StorageClass>)> {
         let mut storage_classes = vec![];
         let mut types = vec![];
         for specifier in specifiers {
@@ -167,31 +180,35 @@ impl<'a> Parser<'a> {
                 TokenKind::Int => types.push(Type::Int),
                 TokenKind::Long => types.push(Type::Long),
                 TokenKind::Static | TokenKind::Extern => storage_classes.push(specifier.kind),
-                _ => self.report_error(format!("Bad declaration specifier {:?}", specifier)),
+                _ => {
+                    return Err(
+                        self.report_error(format!("Bad declaration specifier {:?}", specifier))
+                    );
+                }
             }
         }
 
-        let ty = Self::consolidate_type_specifier(types);
+        let ty = self.consolidate_type_specifier(types)?;
         let storage_class = match &storage_classes[..] {
             [] => None,
             [TokenKind::Extern] => Some(StorageClass::Extern),
             [TokenKind::Static] => Some(StorageClass::Static),
-            l => self.report_error(format!("Too many storage classes {:?}", l)),
+            l => return Err(self.report_error(format!("Too many storage classes {:?}", l))),
         };
 
-        (ty, storage_class)
+        Ok((ty, storage_class))
     }
 
-    fn consolidate_type_specifier(types: Vec<Type>) -> Type {
+    fn consolidate_type_specifier(&self, types: Vec<Type>) -> ParseResult<Type> {
         match &types[..] {
-            [Type::Int] => Type::Int,
-            [Type::Long] => Type::Long,
-            [Type::Int, Type::Long] | [Type::Long, Type::Int] => Type::Long,
-            t => panic!("Bad type specifier {:?}", t),
+            [Type::Int] => Ok(Type::Int),
+            [Type::Long] => Ok(Type::Long),
+            [Type::Int, Type::Long] | [Type::Long, Type::Int] => Ok(Type::Long),
+            t => Err(self.report_error(format!("Bad type specifier {:?}", t))),
         }
     }
 
-    fn type_specifier(&mut self) -> Type {
+    fn type_specifier(&mut self) -> ParseResult<Type> {
         let mut types = vec![];
         while Self::is_type(self.current()) {
             match self.current().kind {
@@ -201,53 +218,57 @@ impl<'a> Parser<'a> {
             }
             self.advance();
         }
-        Self::consolidate_type_specifier(types)
+        self.consolidate_type_specifier(types)
     }
 
-    fn param_list(&mut self) -> Vec<(Symbol, Type)> {
+    fn param_list(&mut self) -> ParseResult<Vec<(Symbol, Type)>> {
         let mut params = vec![];
         if self.current().kind == TokenKind::Void {
-            self.consume(TokenKind::Void);
-            return params;
+            self.consume(TokenKind::Void)?;
+            return Ok(params);
         }
 
         while {
-            let ty = self.type_specifier();
-            params.push((self.name(), ty));
+            let ty = self.type_specifier()?;
+            params.push((self.name()?, ty));
 
             let comma = self.current().kind == TokenKind::Comma;
             if comma {
-                self.consume(TokenKind::Comma);
+                self.consume(TokenKind::Comma)?;
             }
             comma
-        } {}
+        } {} // This is a sneaky hack for a do-while loop
 
-        params
+        Ok(params)
     }
 
-    fn block_item(&mut self) -> BlockItem<Expression> {
-        match self.current() {
-            t if Self::is_specifier(t) => BlockItem::D(self.declaration()),
+    fn block_item(&mut self) -> ParseResult<BlockItem<Expression>> {
+        Ok(match self.current() {
+            t if Self::is_specifier(t) => BlockItem::D(self.declaration()?),
             Token {
                 kind: TokenKind::Eof,
                 ..
-            } => self.report_error("Unexpected end of input parsing block item".to_string()),
-            _ => BlockItem::S(self.statement()),
-        }
+            } => {
+                return Err(
+                    self.report_error("Unexpected end of input parsing block item".to_string())
+                );
+            }
+            _ => BlockItem::S(self.statement()?),
+        })
     }
 
-    fn statement(&mut self) -> Statement<Expression> {
-        match self.current().kind {
+    fn statement(&mut self) -> ParseResult<Statement<Expression>> {
+        Ok(match self.current().kind {
             TokenKind::If => {
-                self.consume(TokenKind::If);
-                self.consume(TokenKind::LParen);
-                let condition = self.expression(Prec::Bottom);
-                self.consume(TokenKind::RParen);
-                let if_stmt = self.statement();
+                self.consume(TokenKind::If)?;
+                self.consume(TokenKind::LParen)?;
+                let condition = self.expression(Prec::Bottom)?;
+                self.consume(TokenKind::RParen)?;
+                let if_stmt = self.statement()?;
                 let else_stmt = match self.current().kind {
                     TokenKind::Else => {
-                        self.consume(TokenKind::Else);
-                        let else_stmt = self.statement();
+                        self.consume(TokenKind::Else)?;
+                        let else_stmt = self.statement()?;
                         Some(Box::new(else_stmt))
                     }
                     _ => None,
@@ -255,76 +276,81 @@ impl<'a> Parser<'a> {
                 Statement::If(condition, Box::new(if_stmt), else_stmt)
             }
             TokenKind::Return => {
-                self.consume(TokenKind::Return);
-                let expr = self.expression(Prec::Bottom);
+                self.consume(TokenKind::Return)?;
+                let expr = self.expression(Prec::Bottom)?;
 
-                self.consume(TokenKind::Semicolon);
+                self.consume(TokenKind::Semicolon)?;
 
                 Statement::Return(expr)
             }
             TokenKind::Semicolon => {
-                self.consume(TokenKind::Semicolon);
+                self.consume(TokenKind::Semicolon)?;
                 Statement::Null
             }
             TokenKind::Id(id) if self.next().kind == TokenKind::Colon => {
                 self.advance();
-                self.consume(TokenKind::Colon);
-                let stmt = self.statement();
+                self.consume(TokenKind::Colon)?;
+                let stmt = self.statement()?;
                 let id = self.interner.intern(id.into());
                 Statement::Label(id, Box::new(stmt))
             }
             TokenKind::Goto => {
-                self.consume(TokenKind::Goto);
+                self.consume(TokenKind::Goto)?;
                 match self.current().kind {
                     TokenKind::Id(id) => {
                         self.advance();
-                        self.consume(TokenKind::Semicolon);
+                        self.consume(TokenKind::Semicolon)?;
                         let id = self.interner.intern(id.into());
                         Statement::Goto(id)
                     }
                     kind => {
-                        self.report_error(format!("Expected identifier after goto, got {:?}", kind))
+                        return Err(self.report_error(format!(
+                            "Expected identifier after goto, got {:?}",
+                            kind
+                        )));
                     }
                 }
             }
-            TokenKind::LBrace => Statement::Compound(self.block()),
+            TokenKind::LBrace => Statement::Compound(self.block()?),
             TokenKind::Break => {
                 self.advance();
                 let stmt = Statement::Break(self.interner.get_str(UNLABELLED));
-                self.consume(TokenKind::Semicolon);
+                self.consume(TokenKind::Semicolon)?;
                 stmt
             }
             TokenKind::Continue => {
                 self.advance();
                 let stmt = Statement::Continue(self.interner.get_str(UNLABELLED));
-                self.consume(TokenKind::Semicolon);
+                self.consume(TokenKind::Semicolon)?;
                 stmt
             }
             TokenKind::While => {
-                self.consume(TokenKind::While);
-                self.consume(TokenKind::LParen);
-                let cond = self.expression(Prec::Bottom);
-                self.consume(TokenKind::RParen);
-                let body = self.statement();
+                self.consume(TokenKind::While)?;
+                self.consume(TokenKind::LParen)?;
+                let cond = self.expression(Prec::Bottom)?;
+                self.consume(TokenKind::RParen)?;
+                let body = self.statement()?;
                 Statement::While(self.interner.get_str(UNLABELLED), cond, Box::new(body))
             }
             TokenKind::Do => {
-                self.consume(TokenKind::Do);
-                let body = self.statement();
-                self.consume(TokenKind::While);
-                self.consume(TokenKind::LParen);
-                let cond = self.expression(Prec::Bottom);
-                self.consume(TokenKind::RParen);
-                self.consume(TokenKind::Semicolon);
+                self.consume(TokenKind::Do)?;
+                let body = self.statement()?;
+                self.consume(TokenKind::While)?;
+                self.consume(TokenKind::LParen)?;
+                let cond = self.expression(Prec::Bottom)?;
+                self.consume(TokenKind::RParen)?;
+                self.consume(TokenKind::Semicolon)?;
                 Statement::DoWhile(self.interner.get_str(UNLABELLED), Box::new(body), cond)
             }
             TokenKind::For => {
-                self.consume(TokenKind::For);
-                self.consume(TokenKind::LParen);
+                self.consume(TokenKind::For)?;
+                self.consume(TokenKind::LParen)?;
                 let init = match self.current() {
-                    t if Self::is_specifier(t) => match self.declaration() {
+                    t if Self::is_specifier(t) => match self.declaration()? {
                         Declaration::Func(_) => {
-                            self.report_error("Function declaration in for loop init".to_string())
+                            return Err(self.report_error(
+                                "Function declaration in for loop init".to_string(),
+                            ));
                         }
                         Declaration::Var(var) => ForInit::Decl(var),
                     },
@@ -332,32 +358,32 @@ impl<'a> Parser<'a> {
                         kind: TokenKind::Semicolon,
                         ..
                     } => {
-                        self.consume(TokenKind::Semicolon);
+                        self.consume(TokenKind::Semicolon)?;
                         ForInit::Null
                     }
                     _ => {
-                        let expr = ForInit::Exp(self.expression(Prec::Bottom));
-                        self.consume(TokenKind::Semicolon);
+                        let expr = ForInit::Exp(self.expression(Prec::Bottom)?);
+                        self.consume(TokenKind::Semicolon)?;
                         expr
                     }
                 };
                 let cond = if self.current().kind != TokenKind::Semicolon {
-                    let expr = Some(self.expression(Prec::Bottom));
-                    self.consume(TokenKind::Semicolon);
+                    let expr = Some(self.expression(Prec::Bottom)?);
+                    self.consume(TokenKind::Semicolon)?;
                     expr
                 } else {
-                    self.consume(TokenKind::Semicolon);
+                    self.consume(TokenKind::Semicolon)?;
                     None
                 };
                 let post = if self.current().kind != TokenKind::RParen {
-                    let expr = Some(self.expression(Prec::Bottom));
-                    self.consume(TokenKind::RParen);
+                    let expr = Some(self.expression(Prec::Bottom)?);
+                    self.consume(TokenKind::RParen)?;
                     expr
                 } else {
-                    self.consume(TokenKind::RParen);
+                    self.consume(TokenKind::RParen)?;
                     None
                 };
-                let body = self.statement();
+                let body = self.statement()?;
 
                 Statement::For(
                     self.interner.get_str(UNLABELLED),
@@ -368,11 +394,11 @@ impl<'a> Parser<'a> {
                 )
             }
             TokenKind::Switch => {
-                self.consume(TokenKind::Switch);
-                self.consume(TokenKind::LParen);
-                let expr = self.expression(Prec::Bottom);
-                self.consume(TokenKind::RParen);
-                let body = Box::new(self.statement());
+                self.consume(TokenKind::Switch)?;
+                self.consume(TokenKind::LParen)?;
+                let expr = self.expression(Prec::Bottom)?;
+                self.consume(TokenKind::RParen)?;
+                let body = Box::new(self.statement()?);
                 Statement::Switch {
                     label: self.interner.get_str(UNLABELLED),
                     expr,
@@ -381,45 +407,49 @@ impl<'a> Parser<'a> {
                 }
             }
             TokenKind::Case => {
-                self.consume(TokenKind::Case);
-                let expr = self.expression(Prec::Bottom);
-                self.consume(TokenKind::Colon);
-                let stmt = self.statement();
+                self.consume(TokenKind::Case)?;
+                let expr = self.expression(Prec::Bottom)?;
+                self.consume(TokenKind::Colon)?;
+                let stmt = self.statement()?;
                 Statement::Case(self.interner.get_str(UNLABELLED), expr, Box::new(stmt))
             }
             TokenKind::Default => {
-                self.consume(TokenKind::Default);
-                self.consume(TokenKind::Colon);
-                let stmt = self.statement();
+                self.consume(TokenKind::Default)?;
+                self.consume(TokenKind::Colon)?;
+                let stmt = self.statement()?;
                 Statement::Default(self.interner.get_str(UNLABELLED), Box::new(stmt))
             }
             TokenKind::Eof => {
-                self.report_error("Unexpected end of input parsing statement".to_string())
+                return Err(
+                    self.report_error("Unexpected end of input parsing statement".to_string())
+                );
             }
             _ => {
-                let expr = Statement::Exp(self.expression(Prec::Bottom));
-                self.consume(TokenKind::Semicolon);
+                let expr = Statement::Exp(self.expression(Prec::Bottom)?);
+                self.consume(TokenKind::Semicolon)?;
                 expr
             }
-        }
+        })
     }
 
-    fn constant(&mut self) -> Expression {
+    fn constant(&mut self) -> ParseResult<Expression> {
         let c = match self.current().kind {
             TokenKind::Constant(n) => match n.parse::<i32>() {
                 Ok(n) => Const::Int(n),
-                Err(_) => Const::Long(
-                    n.parse::<i64>()
-                        .expect("Promoted from 32 to 64 bits and it still doesn't work!"),
-                ),
+                Err(_) => Const::Long(n.parse::<i64>().map_err(|_| {
+                    CompileError::Parse(String::from(
+                        "Promoted from 32 to 64 bits and it still doesn't work!",
+                    ))
+                })?),
             },
-            TokenKind::LongConstant(n) => {
-                Const::Long(n.parse::<i64>().expect("Error parsing 64-bit int"))
-            }
-            err => self.report_error(format!("bad numeric parse: {:?}", err)),
+            TokenKind::LongConstant(n) => Const::Long(
+                n.parse::<i64>()
+                    .map_err(|_| CompileError::Parse(String::from("Error parsing 64-bit int")))?,
+            ),
+            err => return Err(self.report_error(format!("bad numeric parse: {:?}", err))),
         };
         self.advance();
-        Expression::Constant(c)
+        Ok(Expression::Constant(c))
     }
 
     fn get_prec(t: Token) -> Prec {
@@ -455,8 +485,8 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn expression(&mut self, prec: Prec) -> Expression {
-        let mut lhs = self.factor();
+    fn expression(&mut self, prec: Prec) -> ParseResult<Expression> {
+        let mut lhs = self.factor()?;
         let mut next = self.current();
 
         while (Self::is_binary_op(&next)
@@ -466,40 +496,40 @@ impl<'a> Parser<'a> {
         {
             let next_prec = Self::get_prec(next);
             if next.kind == TokenKind::Equals {
-                self.consume(TokenKind::Equals);
-                let rhs = self.expression(next_prec);
+                self.consume(TokenKind::Equals)?;
+                let rhs = self.expression(next_prec)?;
                 lhs = Expression::Assign(Box::new(lhs), Box::new(rhs));
             } else if next.kind == TokenKind::Huh {
-                self.consume(TokenKind::Huh);
-                let if_expr = self.expression(Prec::Bottom);
-                self.consume(TokenKind::Colon);
-                let else_expr = self.expression(next_prec);
+                self.consume(TokenKind::Huh)?;
+                let if_expr = self.expression(Prec::Bottom)?;
+                self.consume(TokenKind::Colon)?;
+                let else_expr = self.expression(next_prec)?;
                 lhs =
                     Expression::Conditional(Box::new(lhs), Box::new(if_expr), Box::new(else_expr));
             } else if Self::is_compound_op(&next) {
-                let compound_op = self.compound_op();
-                let rhs = self.expression(next_prec);
+                let compound_op = self.compound_op()?;
+                let rhs = self.expression(next_prec)?;
                 lhs = Expression::Compound(compound_op, Box::new(lhs), Box::new(rhs));
             } else if Self::is_postfix_op(&next) {
                 match next.kind {
                     TokenKind::DoublePlus => {
-                        self.consume(TokenKind::DoublePlus);
+                        self.consume(TokenKind::DoublePlus)?;
                         lhs = Expression::Crement(Fixity::Post, Crement::Inc, Box::new(lhs));
                     }
                     TokenKind::DoubleMinus => {
-                        self.consume(TokenKind::DoubleMinus);
+                        self.consume(TokenKind::DoubleMinus)?;
                         lhs = Expression::Crement(Fixity::Post, Crement::Dec, Box::new(lhs));
                     }
                     _ => (),
                 }
             } else {
-                let binop = self.binary_op();
-                let rhs = self.expression(Self::increment_prec(&next_prec));
+                let binop = self.binary_op()?;
+                let rhs = self.expression(Self::increment_prec(&next_prec))?;
                 lhs = Expression::Binary(binop, Box::new(lhs), Box::new(rhs));
             }
             next = self.current();
         }
-        lhs
+        Ok(lhs)
     }
 
     fn increment_prec(prec: &Prec) -> Prec {
@@ -569,46 +599,46 @@ impl<'a> Parser<'a> {
         )
     }
 
-    fn factor(&mut self) -> Expression {
-        match self.current().kind {
-            TokenKind::LongConstant(_) | TokenKind::Constant(_) => self.constant(),
+    fn factor(&mut self) -> ParseResult<Expression> {
+        Ok(match self.current().kind {
+            TokenKind::LongConstant(_) | TokenKind::Constant(_) => self.constant()?,
             TokenKind::LParen => {
-                self.consume(TokenKind::LParen);
+                self.consume(TokenKind::LParen)?;
                 if Self::is_type(self.current()) {
-                    let ty = self.type_specifier();
-                    self.consume(TokenKind::RParen);
-                    let expr = self.factor();
+                    let ty = self.type_specifier()?;
+                    self.consume(TokenKind::RParen)?;
+                    let expr = self.factor()?;
                     Expression::Cast(ty, Box::new(expr))
                 } else {
-                    let sub_expr = self.expression(Prec::Bottom);
-                    self.consume(TokenKind::RParen);
+                    let sub_expr = self.expression(Prec::Bottom)?;
+                    self.consume(TokenKind::RParen)?;
                     sub_expr
                 }
             }
             TokenKind::Tilde | TokenKind::Minus | TokenKind::Bang => {
                 let un_op = self.unary_op();
-                let inner_expr = self.expression(Prec::Unary);
+                let inner_expr = self.expression(Prec::Unary)?;
                 Expression::Unary(un_op, Box::new(inner_expr))
             }
             TokenKind::Id(id) => {
                 self.advance();
                 let id = self.interner.intern(id.into());
                 if self.current().kind == TokenKind::LParen {
-                    self.consume(TokenKind::LParen);
+                    self.consume(TokenKind::LParen)?;
                     let mut params = vec![];
                     if self.current().kind == TokenKind::RParen {
-                        self.consume(TokenKind::RParen);
+                        self.consume(TokenKind::RParen)?;
                     } else {
                         while {
-                            let expr = self.expression(Prec::Bottom);
+                            let expr = self.expression(Prec::Bottom)?;
                             params.push(expr);
                             let comma = self.current().kind == TokenKind::Comma;
                             if comma {
-                                self.consume(TokenKind::Comma);
+                                self.consume(TokenKind::Comma)?;
                             }
                             comma
                         } {}
-                        self.consume(TokenKind::RParen);
+                        self.consume(TokenKind::RParen)?;
                     }
                     Expression::Call(id, params)
                 } else {
@@ -622,17 +652,19 @@ impl<'a> Parser<'a> {
                     _ => unreachable!(),
                 };
                 self.advance();
-                let inner_expr = self.factor();
+                let inner_expr = self.factor()?;
                 Expression::Crement(Fixity::Pre, crement, Box::new(inner_expr))
             }
-            t => self.report_error(format!("Unexpected token {:?}", t)),
-        }
+            t => return Err(self.report_error(format!("Unexpected token {:?}", t))),
+        })
     }
 
-    fn compound_op(&mut self) -> CompoundOperator {
+    fn compound_op(&mut self) -> ParseResult<CompoundOperator> {
         let compound = match self.current().kind {
             TokenKind::Eof => {
-                self.report_error("Ran out of tokens while parsing expression".to_string())
+                return Err(
+                    self.report_error("Ran out of tokens while parsing expression".to_string())
+                );
             }
             TokenKind::PlusEquals => CompoundOperator::Add,
             TokenKind::MinusEquals => CompoundOperator::Subtract,
@@ -644,16 +676,22 @@ impl<'a> Parser<'a> {
             TokenKind::CaretEquals => CompoundOperator::BitXOr,
             TokenKind::DoubleLAngleEquals => CompoundOperator::ShiftLeft,
             TokenKind::DoubleRAngleEquals => CompoundOperator::ShiftRight,
-            kind => self.report_error(format!("Expected compound operator, got {:?}", kind)),
+            kind => {
+                return Err(
+                    self.report_error(format!("Expected compound operator, got {:?}", kind))
+                );
+            }
         };
         self.advance();
-        compound
+        Ok(compound)
     }
 
-    fn binary_op(&mut self) -> BinaryOperator {
+    fn binary_op(&mut self) -> ParseResult<BinaryOperator> {
         let binop = match self.current().kind {
             TokenKind::Eof => {
-                self.report_error("Ran out of tokens while parsing expression".to_string())
+                return Err(
+                    self.report_error("Ran out of tokens while parsing expression".to_string())
+                );
             }
             TokenKind::Plus => BinaryOperator::Add,
             TokenKind::Minus => BinaryOperator::Subtract,
@@ -674,10 +712,12 @@ impl<'a> Parser<'a> {
             TokenKind::LAngle => BinaryOperator::Less,
             TokenKind::LAngleEquals => BinaryOperator::LessOrEqual,
             TokenKind::Huh => BinaryOperator::Conditional,
-            kind => self.report_error(format!("Expected binary operator, got {:?}", kind)),
+            kind => {
+                return Err(self.report_error(format!("Expected binary operator, got {:?}", kind)));
+            }
         };
         self.advance();
-        binop
+        Ok(binop)
     }
 
     fn unary_op(&mut self) -> UnaryOperator {
@@ -702,16 +742,18 @@ impl<'a> Parser<'a> {
         matches!(t.kind, TokenKind::Long | TokenKind::Int)
     }
 
-    fn report_error(&self, message: String) -> ! {
+    fn report_error(&self, message: String) -> CompileError {
         let last_token = self.last_token.unwrap();
         let line = last_token.line;
-        eprintln!("Error [line {}]: {}", line, message);
-        eprintln!("Error seems to be around here...");
-        self.print_enclosing_lines(last_token.start, self.current_token.unwrap().end);
-        panic!("Aborting due to error")
+        let first = format!("Error [line {}]: {}", line, message);
+        let second = format!("Error seems to be around here...");
+        let lines = self.print_enclosing_lines(last_token.start, self.current_token.unwrap().end);
+        CompileError::Parse(format!(
+            "Aborting due to error:\n{first}\n{second}\n{lines}"
+        ))
     }
 
-    fn print_enclosing_lines(&self, error_start: usize, error_end: usize) {
+    fn print_enclosing_lines(&self, error_start: usize, error_end: usize) -> String {
         let mut line_start = error_start;
         while self.tokens.source.get(line_start..line_start + 1) != Some("\n") {
             line_start -= 1;
@@ -734,19 +776,21 @@ impl<'a> Parser<'a> {
             .lines();
 
         let first_line = error_lines.next().unwrap();
-        eprintln!("{}", first_line);
-        eprintln!(
+        let first = format!("{}", first_line);
+        let second = format!(
             "{}{}",
             str::repeat(" ", start_offset),
             str::repeat("^", first_line.len() - start_offset)
         );
-        if let Some(next_line) = error_lines.next() {
-            eprintln!("{}", next_line);
-            eprintln!(
-                "{}{}",
+        let third = if let Some(next_line) = error_lines.next() {
+            format!(
+                "{next_line}\n{}{}",
                 str::repeat("^", next_line.len() - end_offset),
                 str::repeat(" ", end_offset)
-            );
-        }
+            )
+        } else {
+            String::from("")
+        };
+        format!("{first}\n{second}\n{third}\n")
     }
 }
