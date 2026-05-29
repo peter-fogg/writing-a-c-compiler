@@ -16,24 +16,32 @@ const UNLABELLED: &str = "unlabelled";
 type ParseResult<T> = Result<T, CompileError>;
 
 impl<'a> Parser<'a> {
-    pub fn new(mut tokens: Lexer<'a>, interner: &'a mut Interner) -> Self {
-        let current_token = tokens.next();
-        let next_token = tokens.next();
+    pub fn new(mut tokens: Lexer<'a>, interner: &'a mut Interner) -> ParseResult<Self> {
+        let current_token = Self::next_or_fail(&mut tokens)?;
+        let next_token = Self::next_or_fail(&mut tokens)?;
         interner.intern(UNLABELLED.into());
-        Self {
+        Ok(Self {
             last_token: None,
             tokens,
             current_token,
             next_token,
             interner,
-        }
+        })
     }
 
-    pub fn advance(&mut self) -> Token<'a> {
+    pub fn advance(&mut self) -> ParseResult<Token<'a>> {
         self.last_token = self.current_token;
         self.current_token = self.next_token;
-        self.next_token = self.tokens.next();
-        self.current_token.unwrap_or(Self::eof_token())
+        self.next_token = Self::next_or_fail(&mut self.tokens)?;
+        Ok(self.current_token.unwrap_or(Self::eof_token()))
+    }
+
+    fn next_or_fail(tokens: &mut Lexer<'a>) -> ParseResult<Option<Token<'a>>> {
+        match tokens.next() {
+            Some(Err(err)) => Err(err),
+            Some(Ok(t)) => Ok(Some(t)),
+            None => Ok(None),
+        }
     }
 
     pub fn current(&self) -> Token<'a> {
@@ -62,7 +70,7 @@ impl<'a> Parser<'a> {
     fn consume(&mut self, kind: TokenKind<'a>) -> ParseResult<()> {
         match self.current() {
             t if t.kind == kind => {
-                self.advance();
+                self.advance()?;
                 Ok(())
             }
             t => Err(self.report_error(format!("Expected {:?}, got {:?}", kind, t.kind))),
@@ -95,7 +103,7 @@ impl<'a> Parser<'a> {
     fn name(&mut self) -> ParseResult<Symbol> {
         match self.current().kind {
             TokenKind::Id(id) => {
-                self.advance();
+                self.advance()?;
                 Ok(self.interner.intern(id.into()))
             }
             t => Err(self.report_error(format!("Expected identifier, got {:?}", t))),
@@ -106,7 +114,7 @@ impl<'a> Parser<'a> {
         let mut storage_and_type = vec![];
         while Self::is_specifier(self.current()) {
             storage_and_type.push(self.current());
-            self.advance();
+            self.advance()?;
         }
 
         let (ty, storage) = self.type_and_storage_class(storage_and_type)?;
@@ -216,7 +224,7 @@ impl<'a> Parser<'a> {
                 TokenKind::Long => types.push(Type::Long),
                 _ => unreachable!(),
             }
-            self.advance();
+            self.advance()?;
         }
         self.consolidate_type_specifier(types)
     }
@@ -288,7 +296,7 @@ impl<'a> Parser<'a> {
                 Statement::Null
             }
             TokenKind::Id(id) if self.next().kind == TokenKind::Colon => {
-                self.advance();
+                self.advance()?;
                 self.consume(TokenKind::Colon)?;
                 let stmt = self.statement()?;
                 let id = self.interner.intern(id.into());
@@ -298,7 +306,7 @@ impl<'a> Parser<'a> {
                 self.consume(TokenKind::Goto)?;
                 match self.current().kind {
                     TokenKind::Id(id) => {
-                        self.advance();
+                        self.advance()?;
                         self.consume(TokenKind::Semicolon)?;
                         let id = self.interner.intern(id.into());
                         Statement::Goto(id)
@@ -313,13 +321,13 @@ impl<'a> Parser<'a> {
             }
             TokenKind::LBrace => Statement::Compound(self.block()?),
             TokenKind::Break => {
-                self.advance();
+                self.advance()?;
                 let stmt = Statement::Break(self.interner.get_str(UNLABELLED));
                 self.consume(TokenKind::Semicolon)?;
                 stmt
             }
             TokenKind::Continue => {
-                self.advance();
+                self.advance()?;
                 let stmt = Statement::Continue(self.interner.get_str(UNLABELLED));
                 self.consume(TokenKind::Semicolon)?;
                 stmt
@@ -448,7 +456,7 @@ impl<'a> Parser<'a> {
             ),
             err => return Err(self.report_error(format!("bad numeric parse: {:?}", err))),
         };
-        self.advance();
+        self.advance()?;
         Ok(Expression::Constant(c))
     }
 
@@ -616,12 +624,12 @@ impl<'a> Parser<'a> {
                 }
             }
             TokenKind::Tilde | TokenKind::Minus | TokenKind::Bang => {
-                let un_op = self.unary_op();
+                let un_op = self.unary_op()?;
                 let inner_expr = self.expression(Prec::Unary)?;
                 Expression::Unary(un_op, Box::new(inner_expr))
             }
             TokenKind::Id(id) => {
-                self.advance();
+                self.advance()?;
                 let id = self.interner.intern(id.into());
                 if self.current().kind == TokenKind::LParen {
                     self.consume(TokenKind::LParen)?;
@@ -651,7 +659,7 @@ impl<'a> Parser<'a> {
                     TokenKind::DoubleMinus => Crement::Dec,
                     _ => unreachable!(),
                 };
-                self.advance();
+                self.advance()?;
                 let inner_expr = self.factor()?;
                 Expression::Crement(Fixity::Pre, crement, Box::new(inner_expr))
             }
@@ -682,7 +690,7 @@ impl<'a> Parser<'a> {
                 );
             }
         };
-        self.advance();
+        self.advance()?;
         Ok(compound)
     }
 
@@ -716,19 +724,19 @@ impl<'a> Parser<'a> {
                 return Err(self.report_error(format!("Expected binary operator, got {:?}", kind)));
             }
         };
-        self.advance();
+        self.advance()?;
         Ok(binop)
     }
 
-    fn unary_op(&mut self) -> UnaryOperator {
+    fn unary_op(&mut self) -> ParseResult<UnaryOperator> {
         let unop = match self.current().kind {
             TokenKind::Tilde => UnaryOperator::Complement,
             TokenKind::Minus => UnaryOperator::Negate,
             TokenKind::Bang => UnaryOperator::Not,
             _ => unreachable!(),
         };
-        self.advance();
-        unop
+        self.advance()?;
+        Ok(unop)
     }
 
     fn is_specifier(t: Token<'a>) -> bool {

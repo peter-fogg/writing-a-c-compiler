@@ -1,6 +1,8 @@
 use std::iter::Peekable;
 use std::str::CharIndices;
 
+use crate::CompileError;
+
 #[derive(Debug, PartialEq, Clone, Copy)]
 pub enum TokenKind<'a> {
     Eof,
@@ -205,7 +207,7 @@ impl<'a> Lexer<'a> {
 }
 
 impl<'a> Iterator for Lexer<'a> {
-    type Item = Token<'a>;
+    type Item = Result<Token<'a>, CompileError>;
 
     fn next(&mut self) -> Option<Self::Item> {
         loop {
@@ -224,242 +226,242 @@ impl<'a> Iterator for Lexer<'a> {
                     if let Some((_, next_c)) = self.peek()
                         && Self::is_alpha(*next_c)
                     {
-                        panic!("Bad token");
+                        return Some(Err(CompileError::Lex(format!("Bad token"))));
                     }
-                    return Some(number);
+                    return Some(Ok(number));
                 }
                 c if Self::is_alpha(c) => {
-                    return Some(self.identifier());
+                    return Some(Ok(self.identifier()));
                 }
                 '-' => {
                     if let Some(&(end, '-')) = self.peek() {
                         self.next_char();
-                        return Some(Token {
+                        return Some(Ok(Token {
                             kind: TokenKind::DoubleMinus,
                             start,
                             end,
                             line: self.line,
-                        });
+                        }));
                     } else {
-                        return Some(self.check_next_char(
+                        return Some(Ok(self.check_next_char(
                             '=',
                             TokenKind::MinusEquals,
                             TokenKind::Minus,
                             start,
-                        ));
+                        )));
                     }
                 }
                 '<' => {
                     if let Some(&(_, '<')) = self.peek() {
                         self.next_char();
-                        return Some(self.check_next_char(
+                        return Some(Ok(self.check_next_char(
                             '=',
                             TokenKind::DoubleLAngleEquals,
                             TokenKind::DoubleLAngle,
                             start,
-                        ));
+                        )));
                     } else {
-                        return Some(self.check_next_char(
+                        return Some(Ok(self.check_next_char(
                             '=',
                             TokenKind::LAngleEquals,
                             TokenKind::LAngle,
                             start,
-                        ));
+                        )));
                     }
                 }
                 '>' => {
                     if let Some((_, '>')) = self.peek() {
                         self.next_char();
-                        return Some(self.check_next_char(
+                        return Some(Ok(self.check_next_char(
                             '=',
                             TokenKind::DoubleRAngleEquals,
                             TokenKind::DoubleRAngle,
                             start,
-                        ));
+                        )));
                     } else {
-                        return Some(self.check_next_char(
+                        return Some(Ok(self.check_next_char(
                             '=',
                             TokenKind::RAngleEquals,
                             TokenKind::RAngle,
                             start,
-                        ));
+                        )));
                     }
                 }
                 '&' => {
                     if let Some((_, '&')) = self.peek() {
                         self.next_char();
-                        return Some(Token {
+                        return Some(Ok(Token {
                             kind: TokenKind::DoubleAmpersand,
                             start,
                             end: start + 2,
                             line: self.line,
-                        });
+                        }));
                     } else {
-                        return Some(self.check_next_char(
+                        return Some(Ok(self.check_next_char(
                             '=',
                             TokenKind::AmpersandEquals,
                             TokenKind::Ampersand,
                             start,
-                        ));
+                        )));
                     }
                 }
                 '|' => {
                     if let Some((_, '|')) = self.peek() {
                         self.next_char();
-                        return Some(Token {
+                        return Some(Ok(Token {
                             kind: TokenKind::DoublePipe,
                             start,
                             end: start + 2,
                             line: self.line,
-                        });
+                        }));
                     } else {
-                        return Some(self.check_next_char(
+                        return Some(Ok(self.check_next_char(
                             '=',
                             TokenKind::PipeEquals,
                             TokenKind::Pipe,
                             start,
-                        ));
+                        )));
                     }
                 }
                 '=' => {
-                    return Some(self.check_next_char(
+                    return Some(Ok(self.check_next_char(
                         '=',
                         TokenKind::DoubleEquals,
                         TokenKind::Equals,
                         start,
-                    ));
+                    )));
                 }
                 '!' => {
-                    return Some(self.check_next_char(
+                    return Some(Ok(self.check_next_char(
                         '=',
                         TokenKind::BangEquals,
                         TokenKind::Bang,
                         start,
-                    ));
+                    )));
                 }
                 '~' => {
-                    return Some(Token {
+                    return Some(Ok(Token {
                         kind: TokenKind::Tilde,
                         start,
                         end: start + 1,
                         line: self.line,
-                    });
+                    }));
                 }
                 '(' => {
-                    return Some(Token {
+                    return Some(Ok(Token {
                         kind: TokenKind::LParen,
                         start,
                         end: start + 1,
                         line: self.line,
-                    });
+                    }));
                 }
                 ')' => {
-                    return Some(Token {
+                    return Some(Ok(Token {
                         kind: TokenKind::RParen,
                         start,
                         end: start + 1,
                         line: self.line,
-                    });
+                    }));
                 }
                 '{' => {
-                    return Some(Token {
+                    return Some(Ok(Token {
                         kind: TokenKind::LBrace,
                         start,
                         end: start + 1,
                         line: self.line,
-                    });
+                    }));
                 }
                 '}' => {
-                    return Some(Token {
+                    return Some(Ok(Token {
                         kind: TokenKind::RBrace,
                         start,
                         end: start + 1,
                         line: self.line,
-                    });
+                    }));
                 }
                 ';' => {
-                    return Some(Token {
+                    return Some(Ok(Token {
                         kind: TokenKind::Semicolon,
                         start,
                         end: start + 1,
                         line: self.line,
-                    });
+                    }));
                 }
                 '+' => {
                     if let Some((_, '+')) = self.peek() {
                         self.next_char();
-                        return Some(Token {
+                        return Some(Ok(Token {
                             kind: TokenKind::DoublePlus,
                             start,
                             end: start + 2,
                             line: self.line,
-                        });
+                        }));
                     } else {
-                        return Some(self.check_next_char(
+                        return Some(Ok(self.check_next_char(
                             '=',
                             TokenKind::PlusEquals,
                             TokenKind::Plus,
                             start,
-                        ));
+                        )));
                     }
                 }
                 '/' => {
-                    return Some(self.check_next_char(
+                    return Some(Ok(self.check_next_char(
                         '=',
                         TokenKind::SlashEquals,
                         TokenKind::Slash,
                         start,
-                    ));
+                    )));
                 }
                 '%' => {
-                    return Some(self.check_next_char(
+                    return Some(Ok(self.check_next_char(
                         '=',
                         TokenKind::PercentEquals,
                         TokenKind::Percent,
                         start,
-                    ));
+                    )));
                 }
                 '*' => {
-                    return Some(self.check_next_char(
+                    return Some(Ok(self.check_next_char(
                         '=',
                         TokenKind::StarEquals,
                         TokenKind::Star,
                         start,
-                    ));
+                    )));
                 }
                 '^' => {
-                    return Some(self.check_next_char(
+                    return Some(Ok(self.check_next_char(
                         '=',
                         TokenKind::CaretEquals,
                         TokenKind::Caret,
                         start,
-                    ));
+                    )));
                 }
                 '?' => {
-                    return Some(Token {
+                    return Some(Ok(Token {
                         kind: TokenKind::Huh,
                         start,
                         end: start + 1,
                         line: self.line,
-                    });
+                    }));
                 }
                 ':' => {
-                    return Some(Token {
+                    return Some(Ok(Token {
                         kind: TokenKind::Colon,
                         start,
                         end: start + 1,
                         line: self.line,
-                    });
+                    }));
                 }
                 ',' => {
-                    return Some(Token {
+                    return Some(Ok(Token {
                         kind: TokenKind::Comma,
                         start,
                         end: start + 1,
                         line: self.line,
-                    });
+                    }));
                 }
-                c => panic!("Bad token {}", c),
+                c => return Some(Err(CompileError::Lex(format!("Bad token {}", c)))),
             };
         }
     }
