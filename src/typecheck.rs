@@ -4,11 +4,15 @@
 
 use std::collections::{HashMap, HashSet};
 
+use crate::CompileError;
+
 use crate::ast::{
     BinaryOperator, BlockItem, CaseInfo, CompoundOperator, Const, Crement, Declaration, Expression,
     Fixity, ForInit, Function, Program, Statement, StorageClass, Type, UnaryOperator, Var,
 };
+
 use crate::interner::Symbol;
+
 #[derive(Debug, PartialEq, Clone)]
 pub enum TypedExpression {
     Constant(Type, Const),
@@ -56,26 +60,28 @@ pub struct TypeChecker {
     symbols: HashMap<Symbol, (Type, Attrs)>,
 }
 
+pub type CheckResult = (Program<TypedExpression>, HashMap<Symbol, (Type, Attrs)>);
+
 impl TypeChecker {
     pub fn check_program(
         program: Vec<Declaration<Expression>>,
-    ) -> (Program<TypedExpression>, HashMap<Symbol, (Type, Attrs)>) {
+    ) -> Result<CheckResult, CompileError> {
         //todo define a type alias here
         let mut type_checker = TypeChecker {
             symbols: HashMap::new(),
         };
 
-        let typed_decls = program
-            .into_iter()
-            .map(|declaration| match declaration {
+        let mut typed_decls = Vec::with_capacity(program.len());
+        for declaration in program {
+            typed_decls.push(match declaration {
                 Declaration::Func(function) => {
-                    Declaration::Func(type_checker.check_function_decl(function))
+                    Declaration::Func(type_checker.check_function_decl(function)?)
                 }
-                Declaration::Var(var) => Declaration::Var(type_checker.check_file_var_decl(var)),
-            })
-            .collect::<Vec<_>>();
+                Declaration::Var(var) => Declaration::Var(type_checker.check_file_var_decl(var)?),
+            });
+        }
 
-        (Program(typed_decls), type_checker.symbols)
+        Ok((Program(typed_decls), type_checker.symbols))
     }
 
     fn check_function_decl(
@@ -87,7 +93,7 @@ impl TypeChecker {
             storage,
             ty,
         }: Function<Expression>,
-    ) -> Function<TypedExpression> {
+    ) -> Result<Function<TypedExpression>, CompileError> {
         let mut already_defined = false;
         let mut global = storage != Some(StorageClass::Static);
         if let Some(old_decl) = self.symbols.get(&name) {
@@ -101,18 +107,30 @@ impl TypeChecker {
             ) = old_decl
             {
                 if ty != *fun_type {
-                    panic!("Function {} redeclared with different type", name)
+                    return Err(CompileError::Check(format!(
+                        "Function {} redeclared with different type",
+                        name
+                    )));
                 }
                 if *defined && body.is_some() {
-                    panic!("Duplicate definition of function {}", name);
+                    return Err(CompileError::Check(format!(
+                        "Duplicate definition of function {}",
+                        name
+                    )));
                 }
                 already_defined = *defined;
                 if *old_global && storage == Some(StorageClass::Static) {
-                    panic!("Static function declaration {} follows non-static", name);
+                    return Err(CompileError::Check(format!(
+                        "Static function declaration {} follows non-static",
+                        name
+                    )));
                 }
                 global = *old_global;
             } else {
-                panic!("Function {} already defined as variable", name);
+                return Err(CompileError::Check(format!(
+                    "Function {} already defined as variable",
+                    name
+                )));
             }
         }
         let attrs = Attrs::Fun {
@@ -126,73 +144,85 @@ impl TypeChecker {
             unreachable!("")
         };
 
-        let body = body.map(|block_items| {
-            for (param, param_ty) in &params {
-                self.symbols
-                    .insert(*param, (param_ty.clone(), Attrs::Local));
+        let body = match body {
+            Some(block_items) => {
+                for (param, param_ty) in &params {
+                    self.symbols
+                        .insert(*param, (param_ty.clone(), Attrs::Local));
+                }
+                Some(self.check_block(&ret_ty, block_items)?)
             }
-            self.check_block(&ret_ty, block_items)
-        });
+            None => None,
+        };
 
-        Function {
+        Ok(Function {
             name,
             ty,
             params,
             body,
             storage,
-        }
+        })
     }
 
     fn check_block(
         &mut self,
         current_fn: &Type,
         block_items: Vec<BlockItem<Expression>>,
-    ) -> Vec<BlockItem<TypedExpression>> {
-        block_items
-            .into_iter()
-            .map(|block_item| match block_item {
+    ) -> Result<Vec<BlockItem<TypedExpression>>, CompileError> {
+        let mut typed_block_items = Vec::with_capacity(block_items.len());
+        for block_item in block_items {
+            typed_block_items.push(match block_item {
                 BlockItem::D(decl) => BlockItem::D(match decl {
-                    Declaration::Var(var) => Declaration::Var(self.check_block_var_decl(var)),
-                    Declaration::Func(func) => Declaration::Func(self.check_function_decl(func)),
+                    Declaration::Var(var) => Declaration::Var(self.check_block_var_decl(var)?),
+                    Declaration::Func(func) => Declaration::Func(self.check_function_decl(func)?),
                 }),
-                BlockItem::S(stmt) => BlockItem::S(self.check_statement(current_fn, stmt)),
-            })
-            .collect::<Vec<_>>()
+                BlockItem::S(stmt) => BlockItem::S(self.check_statement(current_fn, stmt)?),
+            });
+        }
+        Ok(typed_block_items)
     }
 
     fn check_statement(
         &mut self,
         current_fn: &Type,
         stmt: Statement<Expression>,
-    ) -> Statement<TypedExpression> {
-        match stmt {
+    ) -> Result<Statement<TypedExpression>, CompileError> {
+        Ok(match stmt {
             Statement::Return(expr) => {
-                let typed_expr = self.check_expr(expr);
+                let typed_expr = self.check_expr(expr)?;
                 let cast_expr = cast(typed_expr, current_fn);
                 Statement::Return(cast_expr)
             }
-            Statement::Exp(expr) => Statement::Exp(self.check_expr(expr)),
+            Statement::Exp(expr) => Statement::Exp(self.check_expr(expr)?),
             Statement::If(cond, if_stmt, else_stmt) => {
-                let typed_cond = self.check_expr(cond);
-                let typed_if = self.check_statement(current_fn, *if_stmt);
-                let typed_else =
-                    else_stmt.map(|stmt| Box::new(self.check_statement(current_fn, *stmt)));
+                let typed_cond = self.check_expr(cond)?;
+                let typed_if = self.check_statement(current_fn, *if_stmt)?;
+                let typed_else = match else_stmt {
+                    Some(stmt) => Some(Box::new(self.check_statement(current_fn, *stmt)?)),
+                    None => None,
+                };
                 Statement::If(typed_cond, Box::new(typed_if), typed_else)
             }
             Statement::Goto(label) => Statement::Goto(label),
             Statement::Label(label, stmt) => {
-                Statement::Label(label, Box::new(self.check_statement(current_fn, *stmt)))
+                Statement::Label(label, Box::new(self.check_statement(current_fn, *stmt)?))
             }
             Statement::Compound(block_items) => {
-                Statement::Compound(self.check_block(current_fn, block_items))
+                Statement::Compound(self.check_block(current_fn, block_items)?)
             }
             Statement::Break(label) => Statement::Break(label),
             Statement::Continue(label) => Statement::Continue(label),
             Statement::For(label, for_init, cond, post, body) => {
-                let typed_init = self.check_for_init(for_init);
-                let typed_cond = cond.map(|expr| self.check_expr(expr));
-                let typed_post = post.map(|expr| self.check_expr(expr));
-                let typed_body = self.check_statement(current_fn, *body);
+                let typed_init = self.check_for_init(for_init)?;
+                let typed_cond = match cond {
+                    Some(expr) => Some(self.check_expr(expr)?),
+                    None => None,
+                };
+                let typed_post = match post {
+                    Some(expr) => Some(self.check_expr(expr)?),
+                    None => None,
+                };
+                let typed_body = self.check_statement(current_fn, *body)?;
                 Statement::For(
                     label,
                     typed_init,
@@ -202,13 +232,13 @@ impl TypeChecker {
                 )
             }
             Statement::While(label, cond, body) => {
-                let typed_body = self.check_statement(current_fn, *body);
-                let typed_cond = self.check_expr(cond);
+                let typed_body = self.check_statement(current_fn, *body)?;
+                let typed_cond = self.check_expr(cond)?;
                 Statement::While(label, typed_cond, Box::new(typed_body))
             }
             Statement::DoWhile(label, body, cond) => {
-                let typed_body = self.check_statement(current_fn, *body);
-                let typed_cond = self.check_expr(cond);
+                let typed_body = self.check_statement(current_fn, *body)?;
+                let typed_cond = self.check_expr(cond)?;
                 Statement::DoWhile(label, Box::new(typed_body), typed_cond)
             }
             Statement::Switch {
@@ -217,8 +247,8 @@ impl TypeChecker {
                 label,
                 cases,
             } => {
-                let expr = self.check_expr(expr);
-                let body = Box::new(self.check_statement(current_fn, *body));
+                let expr = self.check_expr(expr)?;
+                let body = Box::new(self.check_statement(current_fn, *body)?);
                 let cases = if *get_type(&expr) == Type::Long {
                     convert_long_cases(&cases)
                 } else {
@@ -232,15 +262,15 @@ impl TypeChecker {
                 }
             }
             Statement::Case(label, expr, stmt) => {
-                let typed_expr = self.check_expr(expr);
-                let typed_stmt = self.check_statement(current_fn, *stmt);
+                let typed_expr = self.check_expr(expr)?;
+                let typed_stmt = self.check_statement(current_fn, *stmt)?;
                 Statement::Case(label, typed_expr, Box::new(typed_stmt))
             }
             Statement::Default(label, stmt) => {
-                Statement::Default(label, Box::new(self.check_statement(current_fn, *stmt)))
+                Statement::Default(label, Box::new(self.check_statement(current_fn, *stmt)?))
             }
             Statement::Null => Statement::Null,
-        }
+        })
     }
 
     fn check_file_var_decl(
@@ -251,7 +281,7 @@ impl TypeChecker {
             storage,
             ty,
         }: Var<Expression>,
-    ) -> Var<TypedExpression> {
+    ) -> Result<Var<TypedExpression>, CompileError> {
         let mut init_attr = match init {
             Some(Expression::Constant(Const::Int(n))) => InitValue::Initial(StaticInit::Int(n)),
             Some(Expression::Constant(Const::Long(n))) => InitValue::Initial(StaticInit::Long(n)),
@@ -262,13 +292,21 @@ impl TypeChecker {
                     InitValue::Tentative
                 }
             }
-            _ => panic!("Non-constant initialization of variable {}", name),
+            _ => {
+                return Err(CompileError::Check(format!(
+                    "Non-constant initialization of variable {}",
+                    name
+                )));
+            }
         };
 
         let mut global = storage != Some(StorageClass::Static);
         match self.symbols.get(&name) {
             Some((declared_ty, _)) if *declared_ty != ty => {
-                panic!("Conflicting declaration of variable {}", name)
+                return Err(CompileError::Check(format!(
+                    "Conflicting declaration of variable {}",
+                    name
+                )));
             }
             Some((
                 _,
@@ -280,11 +318,17 @@ impl TypeChecker {
                 if storage == Some(StorageClass::Extern) {
                     global = *old_global;
                 } else if *old_global != global {
-                    panic!("Conflicting linkage of variable {}", name);
+                    return Err(CompileError::Check(format!(
+                        "Conflicting linkage of variable {}",
+                        name
+                    )));
                 }
                 if let InitValue::Initial(_) = old_init {
                     if let InitValue::Initial(_) = init_attr {
-                        panic!("Conflicting file scope definitions of variable {}", name);
+                        return Err(CompileError::Check(format!(
+                            "Conflicting file scope definitions of variable {}",
+                            name
+                        )));
                     }
                     init_attr = *old_init;
                 } else if *old_init == InitValue::Tentative
@@ -305,12 +349,16 @@ impl TypeChecker {
                 },
             ),
         );
-        Var {
+        let typed_init = match init {
+            Some(expr) => Some(self.check_expr(expr)?),
+            None => None,
+        };
+        Ok(Var {
             name,
             storage,
             ty,
-            init: init.map(|expr| self.check_expr(expr)),
-        }
+            init: typed_init,
+        })
     }
 
     fn check_block_var_decl(
@@ -321,29 +369,36 @@ impl TypeChecker {
             storage,
             ty,
         }: Var<Expression>,
-    ) -> Var<TypedExpression> {
+    ) -> Result<Var<TypedExpression>, CompileError> {
         match storage {
             // No storage class means this is a local variable
             None => {
                 // Check for an earlier declaration with a different type
-                self.check_redeclaration(&ty, &name);
+                self.check_redeclaration(&ty, &name)?;
                 // Insert the type as declared
                 self.symbols.insert(name, (ty.clone(), Attrs::Local));
 
                 // Typecheck the init expr if it exists and convert it to the appropriate type
-                let typed_init = init.map(|expr| cast(self.check_expr(expr), &ty));
 
-                Var {
+                let typed_init = match init {
+                    Some(expr) => Some(cast(self.check_expr(expr)?, &ty)),
+                    None => None,
+                };
+
+                Ok(Var {
                     name,
                     init: typed_init,
                     storage,
                     ty,
-                }
+                })
             }
             Some(StorageClass::Extern) => {
                 // Extern variable cannot be initialized because they live in some other translation unit
                 if init.is_some() {
-                    panic!("Initializer on local extern declaration {}", name);
+                    return Err(CompileError::Check(format!(
+                        "Initializer on local extern declaration {}",
+                        name
+                    )));
                 }
                 // Check for an earlier declaration with a different type
                 if let std::collections::hash_map::Entry::Vacant(e) = self.symbols.entry(name) {
@@ -355,14 +410,14 @@ impl TypeChecker {
                         },
                     ));
                 } else {
-                    self.check_redeclaration(&ty, &name);
+                    self.check_redeclaration(&ty, &name)?;
                 }
-                Var {
+                Ok(Var {
                     name,
                     init: None,
                     storage,
                     ty,
-                }
+                })
             }
             Some(StorageClass::Static) => {
                 // Determine the initializer attribute
@@ -372,7 +427,12 @@ impl TypeChecker {
                         _ => StaticInit::Int(0),
                     },
                     Some(Expression::Constant(n)) => Self::compile_time_cast(n, ty.clone()),
-                    _ => panic!("Non-constant initialization of variable {}", name),
+                    _ => {
+                        return Err(CompileError::Check(format!(
+                            "Non-constant initialization of variable {}",
+                            name
+                        )));
+                    }
                 };
 
                 self.symbols.insert(
@@ -385,13 +445,16 @@ impl TypeChecker {
                         },
                     ),
                 );
-                let typed_init = init.map(|expr| self.check_expr(expr));
-                Var {
+                let typed_init = match init {
+                    Some(expr) => Some(self.check_expr(expr)?),
+                    None => None,
+                };
+                Ok(Var {
                     name,
                     init: typed_init,
                     storage,
                     ty,
-                }
+                })
             }
         }
     }
@@ -409,47 +472,59 @@ impl TypeChecker {
         }
     }
 
-    fn check_redeclaration(&self, ty: &Type, name: &Symbol) {
+    fn check_redeclaration(&self, ty: &Type, name: &Symbol) -> Result<(), CompileError> {
         if let Some((declared_ty, _)) = self.symbols.get(name)
             && *declared_ty != *ty
         {
-            panic!(
+            return Err(CompileError::Check(format!(
                 "Variable {} originally declared as {:?} and redeclared as {:?}",
                 name, declared_ty, ty
-            );
+            )));
         }
+        Ok(())
     }
 
-    fn check_for_init(&mut self, for_init: ForInit<Expression>) -> ForInit<TypedExpression> {
-        match for_init {
+    fn check_for_init(
+        &mut self,
+        for_init: ForInit<Expression>,
+    ) -> Result<ForInit<TypedExpression>, CompileError> {
+        Ok(match for_init {
             ForInit::Decl(Var {
                 storage: Some(StorageClass::Static),
                 name,
                 ..
-            }) => panic!("Static initializer {} in for loop", name),
-            ForInit::Decl(var) => ForInit::Decl(self.check_block_var_decl(var)),
-            ForInit::Exp(expr) => ForInit::Exp(self.check_expr(expr)),
+            }) => {
+                return Err(CompileError::Check(format!(
+                    "Static initializer {} in for loop",
+                    name
+                )));
+            }
+            ForInit::Decl(var) => ForInit::Decl(self.check_block_var_decl(var)?),
+            ForInit::Exp(expr) => ForInit::Exp(self.check_expr(expr)?),
             ForInit::Null => ForInit::Null,
-        }
+        })
     }
 
     // Return a new typed expression after checking this expression.
-    fn check_expr(&mut self, expr: Expression) -> TypedExpression {
-        match expr {
+    fn check_expr(&mut self, expr: Expression) -> Result<TypedExpression, CompileError> {
+        Ok(match expr {
             Expression::Var(id) => {
                 let v_type = self.symbols.get(&id).unwrap().0.clone(); // unwrap() is safe because we've already resolved symbols
                 if let Type::Fun(_, _) = v_type {
-                    panic!("Function {} used as variable", id);
+                    return Err(CompileError::Check(format!(
+                        "Function {} used as variable",
+                        id
+                    )));
                 }
                 TypedExpression::Var(v_type, id)
             }
             Expression::Constant(n) => TypedExpression::Constant(const_type(&n), n),
             Expression::Cast(ty, expr) => {
-                let typed_expr = self.check_expr(*expr);
+                let typed_expr = self.check_expr(*expr)?;
                 TypedExpression::Cast(ty, Box::new(typed_expr))
             }
             Expression::Unary(unop, expr) => {
-                let typed_expr = self.check_expr(*expr);
+                let typed_expr = self.check_expr(*expr)?;
                 let ty = match unop {
                     UnaryOperator::Not => Type::Int,
                     _ => get_type(&typed_expr).clone(),
@@ -457,15 +532,15 @@ impl TypeChecker {
                 TypedExpression::Unary(ty, unop, Box::new(typed_expr))
             }
             Expression::Binary(binop, lhs, rhs) => {
-                let typed_lhs = self.check_expr(*lhs);
-                let typed_rhs = self.check_expr(*rhs);
+                let typed_lhs = self.check_expr(*lhs)?;
+                let typed_rhs = self.check_expr(*rhs)?;
                 if matches!(binop, BinaryOperator::And | BinaryOperator::Or) {
-                    return TypedExpression::Binary(
+                    return Ok(TypedExpression::Binary(
                         Type::Int,
                         binop,
                         Box::new(typed_lhs),
                         Box::new(typed_rhs),
-                    );
+                    ));
                 }
 
                 let left_ty = get_type(&typed_lhs);
@@ -502,8 +577,8 @@ impl TypeChecker {
                 }
             }
             Expression::Assign(lhs, rhs) => {
-                let typed_lhs = self.check_expr(*lhs);
-                let typed_rhs = self.check_expr(*rhs);
+                let typed_lhs = self.check_expr(*lhs)?;
+                let typed_rhs = self.check_expr(*rhs)?;
                 let left_type = get_type(&typed_lhs);
                 let cast_rhs = cast(typed_rhs, left_type);
 
@@ -522,8 +597,8 @@ impl TypeChecker {
                 // the typed AST makes this easier because we can
                 // separate the LHS type and the RHS type here, while
                 // we can't while generating TACKY.
-                let typed_lhs = self.check_expr(*lhs);
-                let typed_rhs = self.check_expr(*rhs);
+                let typed_lhs = self.check_expr(*lhs)?;
+                let typed_rhs = self.check_expr(*rhs)?;
 
                 let lhs_ty = get_type(&typed_lhs).clone();
                 let rhs_ty = get_type(&typed_rhs).clone();
@@ -567,7 +642,7 @@ impl TypeChecker {
                 TypedExpression::Assign(lhs_ty, Box::new(typed_lhs.clone()), Box::new(rhs_expr))
             }
             Expression::Crement(fixity, crement, expr) => {
-                let typed_expr = self.check_expr(*expr);
+                let typed_expr = self.check_expr(*expr)?;
                 let ty = get_type(&typed_expr);
                 TypedExpression::Crement(ty.clone(), fixity, crement, Box::new(typed_expr))
             }
@@ -576,27 +651,32 @@ impl TypeChecker {
                 match fn_type {
                     Type::Fun(param_tys, ret_ty) => {
                         if param_tys.len() != params.len() {
-                            panic!(
+                            return Err(CompileError::Check(format!(
                                 "Function {} expected {} params and got {}",
                                 name,
                                 param_tys.len(),
                                 params.len()
-                            )
+                            )));
                         }
                         let mut converted_params = Vec::with_capacity(params.len());
                         for (param_ty, param) in param_tys.iter().zip(params) {
-                            let typed_param = self.check_expr(param);
+                            let typed_param = self.check_expr(param)?;
                             converted_params.push(cast(typed_param, param_ty));
                         }
                         TypedExpression::Call(*ret_ty, name, converted_params)
                     }
-                    _ => panic!("Variable {} used as function name", name),
+                    _ => {
+                        return Err(CompileError::Check(format!(
+                            "Variable {} used as function name",
+                            name
+                        )));
+                    }
                 }
             }
             Expression::Conditional(cond, if_expr, else_expr) => {
-                let typed_cond = self.check_expr(*cond);
-                let typed_if = self.check_expr(*if_expr);
-                let typed_else = self.check_expr(*else_expr);
+                let typed_cond = self.check_expr(*cond)?;
+                let typed_if = self.check_expr(*if_expr)?;
+                let typed_else = self.check_expr(*else_expr)?;
 
                 let ty = get_common_type(get_type(&typed_if), get_type(&typed_else));
                 TypedExpression::Conditional(
@@ -606,7 +686,7 @@ impl TypeChecker {
                     Box::new(cast(typed_else, &ty)),
                 )
             }
-        }
+        })
     }
 }
 

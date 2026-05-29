@@ -1,11 +1,12 @@
 use std::collections::{HashMap, HashSet};
 
+use crate::CompileError;
 use crate::ast::{
     BlockItem, CaseInfo, Const, Declaration, Expression, ForInit, Function, Program, Statement,
     StorageClass, Type, Var,
 };
 use crate::interner::{Interner, Symbol};
-use crate::typecheck::{Attrs, TypeChecker, TypedExpression};
+use crate::typecheck::{CheckResult, TypeChecker};
 
 #[derive(PartialEq, Eq, Debug, Copy, Clone)]
 enum Linkage {
@@ -357,7 +358,7 @@ impl ResolveState<'_> {
 pub fn analyze(
     program: Program<Expression>,
     interner: &mut Interner,
-) -> (Program<TypedExpression>, HashMap<Symbol, (Type, Attrs)>) {
+) -> Result<CheckResult, CompileError> {
     let declarations = program.0;
     let mut analyzed = Vec::with_capacity(declarations.len());
     let mut resolve_state = ResolveState {
