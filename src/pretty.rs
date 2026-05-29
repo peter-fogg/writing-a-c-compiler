@@ -186,9 +186,6 @@ impl fmt::Display for TypedExpression {
             TypedExpression::Binary(_, binop, lhs, rhs) => {
                 format!("{:?}({}, {})", binop, lhs, rhs)
             }
-            TypedExpression::Compound(_, compound, lhs, rhs) => {
-                format!("{:?}({}, {})", compound, lhs, rhs)
-            }
             TypedExpression::Crement(_, fix, crement, expr) => {
                 format!("{:?}({:?}, {})", fix, crement, expr)
             }

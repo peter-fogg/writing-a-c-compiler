@@ -19,12 +19,6 @@ pub enum TypedExpression {
         Box<TypedExpression>,
         Box<TypedExpression>,
     ),
-    Compound(
-        Type,
-        CompoundOperator,
-        Box<TypedExpression>,
-        Box<TypedExpression>,
-    ),
     Crement(Type, Fixity, Crement, Box<TypedExpression>),
     Var(Type, Symbol),
     Assign(Type, Box<TypedExpression>, Box<TypedExpression>),
@@ -516,11 +510,61 @@ impl TypeChecker {
                 TypedExpression::Assign(left_type.clone(), Box::new(typed_lhs), Box::new(cast_rhs))
             }
             Expression::Compound(op, lhs, rhs) => {
+                // Desugar compound expressions into an assignment and
+                // a binary op. Example: x += 1 desugars to x = x +
+                // 1. This is a safe translation because the variable
+                // analysis pass has already determined that the LHS
+                // of the expression is a variable, and evaluating a
+                // variable twice in the rewritten expression doesn't
+                // affect the result.
+
+                // Desugaring instead of a straight translation into
+                // the typed AST makes this easier because we can
+                // separate the LHS type and the RHS type here, while
+                // we can't while generating TACKY.
                 let typed_lhs = self.check_expr(*lhs);
                 let typed_rhs = self.check_expr(*rhs);
-                let ty = get_type(&typed_lhs);
-                let cast_rhs = cast(typed_rhs.clone(), &ty);
-                TypedExpression::Compound(ty.clone(), op, Box::new(typed_lhs), Box::new(cast_rhs))
+
+                let lhs_ty = get_type(&typed_lhs).clone();
+                let rhs_ty = get_type(&typed_rhs).clone();
+
+                let rhs_expr = match (&lhs_ty, &rhs_ty) {
+                    // Variable is a long and operand is an
+                    // int. Convert the operand to a long and do the
+                    // operation.
+                    (Type::Long, Type::Int) => TypedExpression::Binary(
+                        Type::Long,
+                        convert_compound_op(op),
+                        Box::new(typed_lhs.clone()),
+                        Box::new(TypedExpression::Cast(
+                            Type::Long,
+                            Box::new(typed_rhs.clone()),
+                        )),
+                    ),
+                    // Variable is an int and operand is a
+                    // long. Convert both to longs, do the operation,
+                    // then truncate the result to int.
+                    (Type::Int, Type::Long) => TypedExpression::Cast(
+                        Type::Int,
+                        Box::new(TypedExpression::Binary(
+                            Type::Long,
+                            convert_compound_op(op),
+                            Box::new(TypedExpression::Cast(
+                                Type::Long,
+                                Box::new(typed_lhs.clone()),
+                            )),
+                            Box::new(typed_rhs),
+                        )),
+                    ),
+                    // No type conversions
+                    _ => TypedExpression::Binary(
+                        rhs_ty.clone(), // Both types are the same, doesn't matter which we pick
+                        convert_compound_op(op),
+                        Box::new(typed_lhs.clone()),
+                        Box::new(typed_rhs),
+                    ),
+                };
+                TypedExpression::Assign(lhs_ty, Box::new(typed_lhs.clone()), Box::new(rhs_expr))
             }
             Expression::Crement(fixity, crement, expr) => {
                 let typed_expr = self.check_expr(*expr);
@@ -566,6 +610,21 @@ impl TypeChecker {
     }
 }
 
+fn convert_compound_op(compound_op: CompoundOperator) -> BinaryOperator {
+    match compound_op {
+        CompoundOperator::Add => BinaryOperator::Add,
+        CompoundOperator::Subtract => BinaryOperator::Subtract,
+        CompoundOperator::Multiply => BinaryOperator::Multiply,
+        CompoundOperator::Divide => BinaryOperator::Divide,
+        CompoundOperator::Remainder => BinaryOperator::Remainder,
+        CompoundOperator::BitAnd => BinaryOperator::BitAnd,
+        CompoundOperator::BitOr => BinaryOperator::BitOr,
+        CompoundOperator::BitXOr => BinaryOperator::BitXOr,
+        CompoundOperator::ShiftLeft => BinaryOperator::ShiftLeft,
+        CompoundOperator::ShiftRight => BinaryOperator::ShiftRight,
+    }
+}
+
 // Return the type of a known-typed expression. Simple pattern
 // match.
 pub fn get_type(expr: &TypedExpression) -> &Type {
@@ -574,7 +633,6 @@ pub fn get_type(expr: &TypedExpression) -> &Type {
         TypedExpression::Binary(ty, _, _, _) => ty,
         TypedExpression::Call(ty, _, _) => ty,
         TypedExpression::Cast(ty, _) => ty,
-        TypedExpression::Compound(ty, _, _, _) => ty,
         TypedExpression::Conditional(ty, _, _, _) => ty,
         TypedExpression::Constant(ty, _) => ty,
         TypedExpression::Crement(ty, _, _, _) => ty,

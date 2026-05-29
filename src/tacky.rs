@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 
 use crate::ast::{
-    BinaryOperator, BlockItem, CaseInfo, CompoundOperator, Const, Crement, Declaration, Fixity,
-    ForInit, Function, Program, Statement, Type, UnaryOperator, Var,
+    BinaryOperator, BlockItem, CaseInfo, Const, Crement, Declaration, Fixity, ForInit, Function,
+    Program, Statement, Type, UnaryOperator, Var,
 };
 use crate::interner::{Interner, Symbol};
 use crate::typecheck::{Attrs, InitValue, StaticInit, TypedExpression, get_type};
@@ -484,34 +484,6 @@ impl<'a> TackifyState<'a> {
 
                 dst
             }
-            TypedExpression::Compound(ty, compound_op, lhs, rhs) => {
-                let op = Self::convert_compound_op(compound_op);
-
-                let TypedExpression::Var(_, id) = *lhs.clone() else {
-                    panic!(
-                        "Bad assignment made it through semantic analysis: {:?}",
-                        *lhs
-                    );
-                };
-
-                let src1 = self.tackify_expr(*lhs, instrs);
-                let src2 = self.tackify_expr(*rhs, instrs);
-                let tmp_dst = self.new_var(ty, "c_tmp");
-
-                instrs.push(Instr::Binary {
-                    binop: op,
-                    src1,
-                    src2,
-                    dst: tmp_dst,
-                });
-
-                instrs.push(Instr::Copy {
-                    src: tmp_dst,
-                    dst: Val::Var(id),
-                });
-
-                Val::Var(id)
-            }
             TypedExpression::Var(_ty, id) => Val::Var(id),
             TypedExpression::Assign(_ty, lhs, expr) => {
                 let result = self.tackify_expr(*expr, instrs);
@@ -660,21 +632,6 @@ impl<'a> TackifyState<'a> {
             BinaryOperator::GreaterOrEqual => BinaryOp::GreaterThanEquals,
             BinaryOperator::LessOrEqual => BinaryOp::LessThanEquals,
             binop => panic!("Unexpected binary operator {:?}", binop),
-        }
-    }
-
-    fn convert_compound_op(compound_op: CompoundOperator) -> BinaryOp {
-        match compound_op {
-            CompoundOperator::Add => BinaryOp::Add,
-            CompoundOperator::Subtract => BinaryOp::Subtract,
-            CompoundOperator::Multiply => BinaryOp::Multiply,
-            CompoundOperator::Divide => BinaryOp::Divide,
-            CompoundOperator::Remainder => BinaryOp::Remainder,
-            CompoundOperator::BitAnd => BinaryOp::BitAnd,
-            CompoundOperator::BitOr => BinaryOp::BitOr,
-            CompoundOperator::BitXOr => BinaryOp::BitXOr,
-            CompoundOperator::ShiftLeft => BinaryOp::ShiftLeft,
-            CompoundOperator::ShiftRight => BinaryOp::ShiftRight,
         }
     }
 }
