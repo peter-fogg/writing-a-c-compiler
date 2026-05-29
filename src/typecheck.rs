@@ -252,7 +252,7 @@ impl TypeChecker {
                 let cases = if *get_type(&expr) == Type::Long {
                     convert_long_cases(&cases)
                 } else {
-                    convert_int_cases(&cases)
+                    convert_int_cases(&cases)?
                 };
                 Statement::Switch {
                     expr,
@@ -767,7 +767,7 @@ fn convert_long_cases(cases: &Vec<CaseInfo>) -> Vec<CaseInfo> {
 }
 
 // If a switch statement's controlling expression is an int, convert all its cases to ints, truncating them
-fn convert_int_cases(cases: &Vec<CaseInfo>) -> Vec<CaseInfo> {
+fn convert_int_cases(cases: &Vec<CaseInfo>) -> Result<Vec<CaseInfo>, CompileError> {
     let mut new_cases = Vec::with_capacity(cases.len());
     // Check for duplicate values after conversions
     let mut values = HashSet::with_capacity(cases.len());
@@ -778,7 +778,9 @@ fn convert_int_cases(cases: &Vec<CaseInfo>) -> Vec<CaseInfo> {
                 label,
             } => {
                 if values.contains(&(*n as i32)) {
-                    panic!("Duplicate case value after conversion {n}")
+                    return Err(CompileError::Check(format!(
+                        "Duplicate case value after conversion {n}"
+                    )));
                 } else {
                     values.insert(*n as i32);
                 }
@@ -792,7 +794,9 @@ fn convert_int_cases(cases: &Vec<CaseInfo>) -> Vec<CaseInfo> {
                 ..
             } => {
                 if values.contains(n) {
-                    panic!("Duplicate case value after conversion {n}")
+                    return Err(CompileError::Check(format!(
+                        "Duplicate case value after conversion {n}"
+                    )));
                 } else {
                     values.insert(*n);
                 }
@@ -801,5 +805,5 @@ fn convert_int_cases(cases: &Vec<CaseInfo>) -> Vec<CaseInfo> {
             _ => new_cases.push(case.clone()),
         }
     }
-    new_cases
+    Ok(new_cases)
 }
