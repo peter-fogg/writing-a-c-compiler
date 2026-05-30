@@ -16,6 +16,10 @@ pub enum TokenKind<'a> {
     Return,
     Constant(&'a str),
     LongConstant(&'a str),
+    UnsignedConstant(&'a str),
+    UnsignedLongConstant(&'a str),
+    Signed,
+    UnsignedLong,
     Semicolon,
     Tilde,
     Plus,
@@ -93,7 +97,7 @@ impl<'a> Lexer<'a> {
         }
     }
 
-    pub fn constant(&mut self) -> Token<'a> {
+    pub fn constant(&mut self) -> Result<Token<'a>, CompileError> {
         let (mut end, mut c) = *self.peek().unwrap();
         let start = end - 1;
 
@@ -101,26 +105,47 @@ impl<'a> Lexer<'a> {
             self.next_char();
             (end, c) = *self.peek().unwrap();
         }
+        let mut suffix_end = end;
+        while "ul".contains(c.to_ascii_lowercase()) {
+            self.next_char();
+            (suffix_end, c) = *self.peek().unwrap();
+        }
+        let mut suffix = self
+            .source
+            .get(end..suffix_end)
+            .unwrap() // Unwrap is safe here because the end..suffix_end range must exist in the source string
+            .to_lowercase()
+            .into_bytes();
+        suffix.sort();
         // Unwrap is safe here because this range has just been proven as only made of digits
         let digits = self.source.get(start..end).unwrap();
-        match c {
-            'l' | 'L' => {
-                // advance to chomp the L suffix
-                self.next_char();
-                Token {
-                    kind: TokenKind::LongConstant(digits),
-                    start,
-                    end: end + 1,
-                    line: self.line,
-                }
-            }
-            _ => Token {
+        Ok(match suffix[..] {
+            [b'l', b'u'] => Token {
+                kind: TokenKind::UnsignedLongConstant(digits),
+                start,
+                end: end + 2,
+                line: self.line,
+            },
+            [b'l'] => Token {
+                kind: TokenKind::LongConstant(digits),
+                start,
+                end: end + 1,
+                line: self.line,
+            },
+            [b'u'] => Token {
+                kind: TokenKind::UnsignedConstant(digits),
+                start,
+                end: end + 1,
+                line: self.line,
+            },
+            [] => Token {
                 kind: TokenKind::Constant(digits),
                 start,
                 end,
                 line: self.line,
             },
-        }
+            _ => return Err(CompileError::Lex(format!("Bad numeric suffix {suffix:?}"))),
+        })
     }
 
     pub fn identifier(&mut self) -> Token<'a> {
@@ -228,7 +253,7 @@ impl<'a> Iterator for Lexer<'a> {
                     {
                         return Some(Err(CompileError::Lex(format!("Bad token"))));
                     }
-                    return Some(Ok(number));
+                    return Some(number);
                 }
                 c if Self::is_alpha(c) => {
                     return Some(Ok(self.identifier()));

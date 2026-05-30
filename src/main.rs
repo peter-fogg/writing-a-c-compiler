@@ -79,7 +79,7 @@ fn compile_file(
     let mut interner = interner::Interner::new();
     let lexed = lexer::Lexer::new(&text);
     if rest_args.iter().any(|s| s == "--lex") {
-        println!("{:?}", lexed.collect::<Vec<_>>());
+        println!("{:?}", lexed.collect::<Result<Vec<_>, CompileError>>()?);
         std::process::exit(0);
     }
     let parsed = Parser::new(lexed, &mut interner)?.parse()?;
