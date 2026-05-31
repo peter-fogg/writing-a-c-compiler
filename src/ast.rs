@@ -62,6 +62,8 @@ pub enum Crement {
 pub enum Const {
     Int(i32),
     Long(i64),
+    UInt(u32),
+    ULong(u64),
 }
 
 impl Display for Const {
@@ -69,6 +71,8 @@ impl Display for Const {
         match self {
             Const::Int(n) => write!(f, "{}", n),
             Const::Long(n) => write!(f, "{}", n),
+            Const::UInt(n) => write!(f, "{}", n),
+            Const::ULong(n) => write!(f, "{}", n),
         }
     }
 }
@@ -140,6 +144,8 @@ pub enum BlockItem<E> {
 pub enum Type {
     Int,
     Long,
+    UInt,
+    ULong,
     Fun(Vec<Type>, Box<Type>),
 }
 

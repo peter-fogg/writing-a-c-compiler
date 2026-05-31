@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use crate::CompileError;
 use crate::ast::*;
 use crate::interner::{Interner, Symbol};
@@ -179,14 +181,16 @@ impl<'a> Parser<'a> {
 
     fn type_and_storage_class(
         &self,
-        specifiers: Vec<Token>,
+        specifiers: Vec<Token<'a>>,
     ) -> ParseResult<(Type, Option<StorageClass>)> {
         let mut storage_classes = vec![];
         let mut types = vec![];
         for specifier in specifiers {
             match specifier.kind {
-                TokenKind::Int => types.push(Type::Int),
-                TokenKind::Long => types.push(Type::Long),
+                kind @ (TokenKind::Int
+                | TokenKind::Long
+                | TokenKind::Unsigned
+                | TokenKind::Signed) => types.push(kind),
                 TokenKind::Static | TokenKind::Extern => storage_classes.push(specifier.kind),
                 _ => {
                     return Err(
@@ -207,21 +211,50 @@ impl<'a> Parser<'a> {
         Ok((ty, storage_class))
     }
 
-    fn consolidate_type_specifier(&self, types: Vec<Type>) -> ParseResult<Type> {
-        match &types[..] {
-            [Type::Int] => Ok(Type::Int),
-            [Type::Long] => Ok(Type::Long),
-            [Type::Int, Type::Long] | [Type::Long, Type::Int] => Ok(Type::Long),
-            t => Err(self.report_error(format!("Bad type specifier {:?}", t))),
+    fn consolidate_type_specifier(&self, types: Vec<TokenKind<'a>>) -> ParseResult<Type> {
+        if types.len() == 0 {
+            return Err(self.report_error(String::from("Empty type specifier list")));
         }
+
+        if types.contains(&TokenKind::Signed) && types.contains(&TokenKind::Unsigned) {
+            return Err(self.report_error(String::from(
+                "Type specifier list contains both signed and unsigned",
+            )));
+        }
+
+        let mut seen = HashSet::new();
+        for type_spec in &types {
+            if seen.contains(type_spec) {
+                return Err(self.report_error(format!(
+                    "Type specifier list contains specificer {type_spec:?} twice"
+                )));
+            }
+            seen.insert(type_spec.clone());
+        }
+
+        if types.contains(&TokenKind::Long) && types.contains(&TokenKind::Unsigned) {
+            return Ok(Type::ULong);
+        }
+
+        if types.contains(&TokenKind::Unsigned) {
+            return Ok(Type::UInt);
+        }
+
+        if types.contains(&TokenKind::Long) {
+            return Ok(Type::Long);
+        }
+
+        Ok(Type::Int)
     }
 
     fn type_specifier(&mut self) -> ParseResult<Type> {
         let mut types = vec![];
         while Self::is_type(self.current()) {
             match self.current().kind {
-                TokenKind::Int => types.push(Type::Int),
-                TokenKind::Long => types.push(Type::Long),
+                kind @ (TokenKind::Int
+                | TokenKind::Long
+                | TokenKind::Unsigned
+                | TokenKind::Signed) => types.push(kind),
                 _ => unreachable!(),
             }
             self.advance()?;
@@ -446,7 +479,15 @@ impl<'a> Parser<'a> {
                 Ok(n) => Const::Int(n),
                 Err(_) => Const::Long(n.parse::<i64>().map_err(|_| {
                     CompileError::Parse(String::from(
-                        "Promoted from 32 to 64 bits and it still doesn't work!",
+                        "Promoted signed from 32 to 64 bits and it still doesn't work!",
+                    ))
+                })?),
+            },
+            TokenKind::UnsignedConstant(n) => match n.parse::<u32>() {
+                Ok(n) => Const::UInt(n),
+                Err(_) => Const::ULong(n.parse::<u64>().map_err(|_| {
+                    CompileError::Parse(String::from(
+                        "Promoted unsigned from 32 to 64 bits and it still doesn't work!",
                     ))
                 })?),
             },
@@ -454,6 +495,9 @@ impl<'a> Parser<'a> {
                 n.parse::<i64>()
                     .map_err(|_| CompileError::Parse(String::from("Error parsing 64-bit int")))?,
             ),
+            TokenKind::UnsignedLongConstant(n) => Const::ULong(n.parse::<u64>().map_err(|_| {
+                CompileError::Parse(String::from("Error parsing 64-bit unsigned int"))
+            })?),
             err => return Err(self.report_error(format!("bad numeric parse: {:?}", err))),
         };
         self.advance()?;
@@ -609,7 +653,10 @@ impl<'a> Parser<'a> {
 
     fn factor(&mut self) -> ParseResult<Expression> {
         Ok(match self.current().kind {
-            TokenKind::LongConstant(_) | TokenKind::Constant(_) => self.constant()?,
+            TokenKind::UnsignedConstant(_)
+            | TokenKind::UnsignedLongConstant(_)
+            | TokenKind::LongConstant(_)
+            | TokenKind::Constant(_) => self.constant()?,
             TokenKind::LParen => {
                 self.consume(TokenKind::LParen)?;
                 if Self::is_type(self.current()) {
@@ -742,12 +789,20 @@ impl<'a> Parser<'a> {
     fn is_specifier(t: Token<'a>) -> bool {
         matches!(
             t.kind,
-            TokenKind::Long | TokenKind::Int | TokenKind::Extern | TokenKind::Static
+            TokenKind::Long
+                | TokenKind::Int
+                | TokenKind::Signed
+                | TokenKind::Unsigned
+                | TokenKind::Extern
+                | TokenKind::Static
         )
     }
 
     fn is_type(t: Token<'a>) -> bool {
-        matches!(t.kind, TokenKind::Long | TokenKind::Int)
+        matches!(
+            t.kind,
+            TokenKind::Long | TokenKind::Int | TokenKind::Signed | TokenKind::Unsigned
+        )
     }
 
     fn report_error(&self, message: String) -> CompileError {

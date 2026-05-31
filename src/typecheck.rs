@@ -727,6 +727,7 @@ fn const_type(c: &Const) -> Type {
     match c {
         Const::Int(_) => Type::Int,
         Const::Long(_) => Type::Long,
+        _ => todo!("unsigned"),
     }
 }
 

@@ -3,7 +3,7 @@ use std::str::CharIndices;
 
 use crate::CompileError;
 
-#[derive(Debug, PartialEq, Clone, Copy)]
+#[derive(Debug, Eq, PartialEq, Clone, Copy, Hash)]
 pub enum TokenKind<'a> {
     Eof,
     Id(&'a str),
@@ -19,7 +19,7 @@ pub enum TokenKind<'a> {
     UnsignedConstant(&'a str),
     UnsignedLongConstant(&'a str),
     Signed,
-    UnsignedLong,
+    Unsigned,
     Semicolon,
     Tilde,
     Plus,
@@ -176,6 +176,8 @@ impl<'a> Lexer<'a> {
             "static" => TokenKind::Static,
             "extern" => TokenKind::Extern,
             "long" => TokenKind::Long,
+            "signed" => TokenKind::Signed,
+            "unsigned" => TokenKind::Unsigned,
             _ => TokenKind::Id(id),
         };
 

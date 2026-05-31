@@ -135,6 +135,7 @@ fn alignment(ty: &Type) -> u8 {
         Type::Int => 4,
         Type::Long => 8,
         Type::Fun(_, _) => unreachable!("alignment of function type"),
+        _ => todo!("unsigned"),
     }
 }
 
@@ -146,6 +147,7 @@ fn val_asm_type(val: &Val, symbols: &HashMap<Symbol, (Type, Attrs)>) -> AsmType 
             None => unreachable!("unresolved symbol {}", name),
             Some((ty, _)) => ty_asm_type(ty),
         },
+        _ => todo!("unsigned"),
     }
 }
 
@@ -156,6 +158,7 @@ fn ty_asm_type(ty: &Type) -> AsmType {
         Type::Fun(_, _) => {
             unreachable!("function used as variable post-typechecking")
         }
+        _ => todo!("unsigned"),
     }
 }
 
@@ -553,6 +556,7 @@ fn assemble_val(val: Val) -> Operand {
         Val::Constant(Const::Int(n)) => Operand::Imm(n.into()),
         Val::Constant(Const::Long(n)) => Operand::Imm(n),
         Val::Var(s) => Operand::Pseudo(s),
+        _ => todo!("unsigned"),
     }
 }
 
