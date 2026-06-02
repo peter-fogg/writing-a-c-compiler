@@ -79,7 +79,7 @@ fn compile_file(
     }
     let (analyzed, mut symbols) = analyze(parsed, &mut interner)?;
     if rest_args.iter().any(|s| s == "--validate") {
-        println!("{:?}", analyzed.0);
+        println!("{:?}", pretty::print_program(&analyzed));
         std::process::exit(0);
     }
     let tackified = tacky::emit_tacky(analyzed, &mut symbols, &mut interner);
