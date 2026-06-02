@@ -33,20 +33,6 @@ pub enum BinaryOperator {
 }
 
 #[derive(Debug, PartialEq, Clone, Copy)]
-pub enum CompoundOperator {
-    Add,
-    Subtract,
-    Multiply,
-    Divide,
-    Remainder,
-    BitAnd,
-    BitOr,
-    BitXOr,
-    ShiftLeft,
-    ShiftRight,
-}
-
-#[derive(Debug, PartialEq, Clone, Copy)]
 pub enum Fixity {
     Pre,
     Post,
@@ -82,7 +68,7 @@ pub enum Expression {
     Constant(Const),
     Unary(UnaryOperator, Box<Expression>),
     Binary(BinaryOperator, Box<Expression>, Box<Expression>),
-    Compound(CompoundOperator, Box<Expression>, Box<Expression>),
+    Compound(BinaryOperator, Box<Expression>, Box<Expression>),
     Crement(Fixity, Crement, Box<Expression>),
     Var(Symbol),
     Assign(Box<Expression>, Box<Expression>),

@@ -714,23 +714,23 @@ impl<'a> Parser<'a> {
         })
     }
 
-    fn compound_op(&mut self) -> ParseResult<CompoundOperator> {
+    fn compound_op(&mut self) -> ParseResult<BinaryOperator> {
         let compound = match self.current().kind {
             TokenKind::Eof => {
                 return Err(
                     self.report_error("Ran out of tokens while parsing expression".to_string())
                 );
             }
-            TokenKind::PlusEquals => CompoundOperator::Add,
-            TokenKind::MinusEquals => CompoundOperator::Subtract,
-            TokenKind::StarEquals => CompoundOperator::Multiply,
-            TokenKind::SlashEquals => CompoundOperator::Divide,
-            TokenKind::PercentEquals => CompoundOperator::Remainder,
-            TokenKind::AmpersandEquals => CompoundOperator::BitAnd,
-            TokenKind::PipeEquals => CompoundOperator::BitOr,
-            TokenKind::CaretEquals => CompoundOperator::BitXOr,
-            TokenKind::DoubleLAngleEquals => CompoundOperator::ShiftLeft,
-            TokenKind::DoubleRAngleEquals => CompoundOperator::ShiftRight,
+            TokenKind::PlusEquals => BinaryOperator::Add,
+            TokenKind::MinusEquals => BinaryOperator::Subtract,
+            TokenKind::StarEquals => BinaryOperator::Multiply,
+            TokenKind::SlashEquals => BinaryOperator::Divide,
+            TokenKind::PercentEquals => BinaryOperator::Remainder,
+            TokenKind::AmpersandEquals => BinaryOperator::BitAnd,
+            TokenKind::PipeEquals => BinaryOperator::BitOr,
+            TokenKind::CaretEquals => BinaryOperator::BitXOr,
+            TokenKind::DoubleLAngleEquals => BinaryOperator::ShiftLeft,
+            TokenKind::DoubleRAngleEquals => BinaryOperator::ShiftRight,
             kind => {
                 return Err(
                     self.report_error(format!("Expected compound operator, got {:?}", kind))

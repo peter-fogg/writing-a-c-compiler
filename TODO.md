@@ -10,5 +10,4 @@
 - implement function to guess which parameter is missing/added in incorrect function calls. Levenshtein distance on parameter types? sure i guess
 - add interner to typecheck in order to resolve symbols to proper variable names
 - separate Type into another place... typechecking module maybe?
-- make CompoundOperator and BinaryOperator the same thing
 - rewrite lexer to use regular expressions?

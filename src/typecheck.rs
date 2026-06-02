@@ -7,8 +7,8 @@ use std::collections::{HashMap, HashSet};
 use crate::CompileError;
 
 use crate::ast::{
-    BinaryOperator, BlockItem, CaseInfo, CompoundOperator, Const, Crement, Declaration, Expression,
-    Fixity, ForInit, Function, Program, Statement, StorageClass, Type, UnaryOperator, Var,
+    BinaryOperator, BlockItem, CaseInfo, Const, Crement, Declaration, Expression, Fixity, ForInit,
+    Function, Program, Statement, StorageClass, Type, UnaryOperator, Var,
 };
 use crate::interner::Symbol;
 use crate::semantic_analysis::actual_value;
@@ -609,19 +609,17 @@ impl TypeChecker {
                 // 3. Convert the result to the LHS type.
                 // The cast() function takes care of checking to see
                 // if inserting a Cast expression is actually necessary.
-                let common_type = if matches!(
-                    op,
-                    CompoundOperator::ShiftLeft | CompoundOperator::ShiftRight
-                ) {
-                    lhs_ty.clone()
-                } else {
-                    get_common_type(&lhs_ty, &rhs_ty)?
-                };
+                let common_type =
+                    if matches!(op, BinaryOperator::ShiftLeft | BinaryOperator::ShiftRight) {
+                        lhs_ty.clone()
+                    } else {
+                        get_common_type(&lhs_ty, &rhs_ty)?
+                    };
                 let cast_lhs = cast(typed_lhs.clone(), &common_type);
                 let cast_rhs = cast(typed_rhs, &common_type);
                 let binary_operation = TypedExpression::Binary(
                     common_type,
-                    convert_compound_op(op),
+                    op,
                     Box::new(cast_lhs),
                     Box::new(cast_rhs),
                 );
@@ -675,21 +673,6 @@ impl TypeChecker {
                 )
             }
         })
-    }
-}
-
-fn convert_compound_op(compound_op: CompoundOperator) -> BinaryOperator {
-    match compound_op {
-        CompoundOperator::Add => BinaryOperator::Add,
-        CompoundOperator::Subtract => BinaryOperator::Subtract,
-        CompoundOperator::Multiply => BinaryOperator::Multiply,
-        CompoundOperator::Divide => BinaryOperator::Divide,
-        CompoundOperator::Remainder => BinaryOperator::Remainder,
-        CompoundOperator::BitAnd => BinaryOperator::BitAnd,
-        CompoundOperator::BitOr => BinaryOperator::BitOr,
-        CompoundOperator::BitXOr => BinaryOperator::BitXOr,
-        CompoundOperator::ShiftLeft => BinaryOperator::ShiftLeft,
-        CompoundOperator::ShiftRight => BinaryOperator::ShiftRight,
     }
 }
 
