@@ -652,7 +652,8 @@ fn actual_value(c: Const) -> i64 {
     match c {
         Const::Int(n) => n as i64,
         Const::Long(n) => n,
-        _ => todo!(),
+        Const::UInt(n) => n as i64,
+        Const::ULong(n) => n as i64,
     }
 }
 

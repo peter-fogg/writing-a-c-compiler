@@ -54,6 +54,8 @@ pub enum InitValue {
 pub enum StaticInit {
     Int(i32),
     Long(i64),
+    UInt(u32),
+    ULong(u64),
 }
 
 pub struct TypeChecker {
@@ -285,6 +287,8 @@ impl TypeChecker {
         let mut init_attr = match init {
             Some(Expression::Constant(Const::Int(n))) => InitValue::Initial(StaticInit::Int(n)),
             Some(Expression::Constant(Const::Long(n))) => InitValue::Initial(StaticInit::Long(n)),
+            Some(Expression::Constant(Const::UInt(n))) => InitValue::Initial(StaticInit::UInt(n)),
+            Some(Expression::Constant(Const::ULong(n))) => InitValue::Initial(StaticInit::ULong(n)),
             None => {
                 if storage == Some(StorageClass::Extern) {
                     InitValue::NoInit
@@ -544,7 +548,7 @@ impl TypeChecker {
                 }
 
                 let left_ty = get_type(&typed_lhs);
-                let ty = get_common_type(get_type(&typed_lhs), get_type(&typed_rhs));
+                let ty = get_common_type(get_type(&typed_lhs), get_type(&typed_rhs))?;
                 let cast_lhs = cast(typed_lhs.clone(), &ty);
                 let cast_rhs = cast(typed_rhs.clone(), &ty);
 
@@ -557,7 +561,7 @@ impl TypeChecker {
                     | BinaryOperator::BitAnd
                     | BinaryOperator::BitOr
                     | BinaryOperator::BitXOr => {
-                        let ty = get_common_type(get_type(&typed_lhs), get_type(&typed_rhs));
+                        let ty = get_common_type(get_type(&typed_lhs), get_type(&typed_rhs))?;
                         TypedExpression::Binary(ty, binop, Box::new(cast_lhs), Box::new(cast_rhs))
                     }
                     BinaryOperator::ShiftLeft | BinaryOperator::ShiftRight => {
@@ -678,7 +682,7 @@ impl TypeChecker {
                 let typed_if = self.check_expr(*if_expr)?;
                 let typed_else = self.check_expr(*else_expr)?;
 
-                let ty = get_common_type(get_type(&typed_if), get_type(&typed_else));
+                let ty = get_common_type(get_type(&typed_if), get_type(&typed_else))?;
                 TypedExpression::Conditional(
                     ty.clone(),
                     Box::new(typed_cond),
@@ -727,14 +731,53 @@ fn const_type(c: &Const) -> Type {
     match c {
         Const::Int(_) => Type::Int,
         Const::Long(_) => Type::Long,
-        _ => todo!("unsigned"),
+        Const::UInt(_) => Type::UInt,
+        Const::ULong(_) => Type::ULong,
+    }
+}
+
+// Return size in bytes of the given type
+fn size(t: &Type) -> Result<u8, CompileError> {
+    Ok(match t {
+        Type::Int => 4,
+        Type::UInt => 4,
+        Type::Long => 8,
+        Type::ULong => 8,
+        _ => {
+            return Err(CompileError::Check(String::from(
+                "Can't get size of a function type",
+            )));
+        }
+    })
+}
+
+fn signed(t: &Type) -> bool {
+    match t {
+        Type::Int | Type::Long => true,
+        _ => false,
     }
 }
 
 // Return the usual arithmetic conversion for ensuring expressions
 // involving two types have the right result.
-fn get_common_type(t1: &Type, t2: &Type) -> Type {
-    if t1 == t2 { t1.clone() } else { Type::Long }
+fn get_common_type(t1: &Type, t2: &Type) -> Result<Type, CompileError> {
+    if t1 == t2 {
+        return Ok(t1.clone());
+    }
+
+    if size(t1)? == size(t2)? {
+        if signed(t1) {
+            return Ok(t2.clone());
+        } else {
+            return Ok(t1.clone());
+        }
+    }
+
+    if size(t1)? > size(t2)? {
+        return Ok(t1.clone());
+    } else {
+        return Ok(t2.clone());
+    }
 }
 
 // Return a type converted to another. Either the original type is

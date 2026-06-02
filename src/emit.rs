@@ -59,6 +59,7 @@ fn format_static_init(init: StaticInit) -> String {
         StaticInit::Int(n) => format!(".long {n}"),
         StaticInit::Long(0) => String::from(".zero 8"),
         StaticInit::Long(n) => format!(".quad {n}"),
+        _ => todo!("unsigned"),
     }
 }
 
