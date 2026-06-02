@@ -253,7 +253,7 @@ impl<'a> Iterator for Lexer<'a> {
                     if let Some((_, next_c)) = self.peek()
                         && Self::is_alpha(*next_c)
                     {
-                        return Some(Err(CompileError::Lex(format!("Bad token"))));
+                        return Some(Err(CompileError::Lex("Bad token".to_string())));
                     }
                     return Some(number);
                 }

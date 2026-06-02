@@ -170,16 +170,10 @@ fn ty_asm_type(ty: &Type) -> AsmType {
 
 fn is_unsigned_type(val: &Val, symbols: &HashMap<Symbol, (Type, Attrs)>) -> bool {
     match val {
-        Val::Constant(c) => match c {
-            Const::UInt(_) | Const::ULong(_) => true,
-            _ => false,
-        },
+        Val::Constant(c) => matches!(c, Const::UInt(_) | Const::ULong(_)),
         Val::Var(name) => match symbols.get(name) {
             None => unreachable!("unresolved symbol {name}"),
-            Some((ty, _)) => match ty {
-                Type::UInt | Type::ULong => true,
-                _ => false,
-            },
+            Some((ty, _)) => matches!(ty, Type::UInt | Type::ULong),
         },
     }
 }

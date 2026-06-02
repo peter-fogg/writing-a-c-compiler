@@ -184,10 +184,9 @@ fn emit_instr(instr: Instr, interner: &Interner, file: &mut File) -> Result<()> 
             .as_bytes(),
         )?,
         Instr::MovZeroExtend { .. } => {
-            return Err(CompileError::Emit(String::from(
+            return Err(Error::other(CompileError::Emit(String::from(
                 "MovZeroExtend not fixed up",
-            )))
-            .map_err(Error::other);
+            ))));
         }
     }
     Ok(())

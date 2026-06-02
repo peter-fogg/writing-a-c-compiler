@@ -752,10 +752,7 @@ pub fn size(t: &Type) -> Result<u8, CompileError> {
 }
 
 pub fn signed(t: &Type) -> bool {
-    match t {
-        Type::Int | Type::Long => true,
-        _ => false,
-    }
+    matches!(t, Type::Int | Type::Long)
 }
 
 // Return the usual arithmetic conversion for ensuring expressions
@@ -774,9 +771,9 @@ fn get_common_type(t1: &Type, t2: &Type) -> Result<Type, CompileError> {
     }
 
     if size(t1)? > size(t2)? {
-        return Ok(t1.clone());
+        Ok(t1.clone())
     } else {
-        return Ok(t2.clone());
+        Ok(t2.clone())
     }
 }
 

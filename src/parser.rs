@@ -212,7 +212,7 @@ impl<'a> Parser<'a> {
     }
 
     fn consolidate_type_specifier(&self, types: Vec<TokenKind<'a>>) -> ParseResult<Type> {
-        if types.len() == 0 {
+        if types.is_empty() {
             return Err(self.report_error(String::from("Empty type specifier list")));
         }
 
@@ -229,7 +229,7 @@ impl<'a> Parser<'a> {
                     "Type specifier list contains specificer {type_spec:?} twice"
                 )));
             }
-            seen.insert(type_spec.clone());
+            seen.insert(*type_spec);
         }
 
         if types.contains(&TokenKind::Long) && types.contains(&TokenKind::Unsigned) {
@@ -809,7 +809,7 @@ impl<'a> Parser<'a> {
         let last_token = self.last_token.unwrap();
         let line = last_token.line;
         let first = format!("Error [line {}]: {}", line, message);
-        let second = format!("Error seems to be around here...");
+        let second = "Error seems to be around here...".to_string();
         let lines = self.print_enclosing_lines(last_token.start, self.current_token.unwrap().end);
         CompileError::Parse(format!(
             "Aborting due to error:\n{first}\n{second}\n{lines}"
@@ -839,7 +839,7 @@ impl<'a> Parser<'a> {
             .lines();
 
         let first_line = error_lines.next().unwrap();
-        let first = format!("{}", first_line);
+        let first = first_line.to_string();
         let second = format!(
             "{}{}",
             str::repeat(" ", start_offset),
