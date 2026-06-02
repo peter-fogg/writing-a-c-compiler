@@ -648,7 +648,7 @@ fn gather_block(
 // to compare these in cases to make sure we don't have
 // duplicates. This returns i64 because any int or long must fit into
 // that value.
-fn actual_value(c: Const) -> i64 {
+pub fn actual_value(c: Const) -> i64 {
     match c {
         Const::Int(n) => n as i64,
         Const::Long(n) => n,

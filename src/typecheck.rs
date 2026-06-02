@@ -10,8 +10,8 @@ use crate::ast::{
     BinaryOperator, BlockItem, CaseInfo, CompoundOperator, Const, Crement, Declaration, Expression,
     Fixity, ForInit, Function, Program, Statement, StorageClass, Type, UnaryOperator, Var,
 };
-
 use crate::interner::Symbol;
+use crate::semantic_analysis::actual_value;
 
 #[derive(Debug, PartialEq, Clone)]
 pub enum TypedExpression {
@@ -285,10 +285,9 @@ impl TypeChecker {
         }: Var<Expression>,
     ) -> Result<Var<TypedExpression>, CompileError> {
         let mut init_attr = match init {
-            Some(Expression::Constant(Const::Int(n))) => InitValue::Initial(StaticInit::Int(n)),
-            Some(Expression::Constant(Const::Long(n))) => InitValue::Initial(StaticInit::Long(n)),
-            Some(Expression::Constant(Const::UInt(n))) => InitValue::Initial(StaticInit::UInt(n)),
-            Some(Expression::Constant(Const::ULong(n))) => InitValue::Initial(StaticInit::ULong(n)),
+            Some(Expression::Constant(const_init)) => {
+                InitValue::Initial(cast_init(const_init, &ty))
+            }
             None => {
                 if storage == Some(StorageClass::Extern) {
                     InitValue::NoInit
@@ -847,4 +846,15 @@ fn convert_int_cases(cases: &Vec<CaseInfo>) -> Result<Vec<CaseInfo>, CompileErro
         }
     }
     Ok(new_cases)
+}
+
+// Convert a constant initializer to its declared type
+fn cast_init(const_init: Const, ty: &Type) -> StaticInit {
+    match ty {
+        Type::Int => StaticInit::Int(actual_value(const_init) as i32),
+        Type::UInt => StaticInit::UInt(actual_value(const_init) as u32),
+        Type::Long => StaticInit::Long(actual_value(const_init)),
+        Type::ULong => StaticInit::ULong(actual_value(const_init) as u64),
+        _ => unreachable!("function type in constant initializer"),
+    }
 }
