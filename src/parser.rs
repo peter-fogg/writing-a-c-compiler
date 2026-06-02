@@ -662,7 +662,7 @@ impl<'a> Parser<'a> {
                 if Self::is_type(self.current()) {
                     let ty = self.type_specifier()?;
                     self.consume(TokenKind::RParen)?;
-                    let expr = self.factor()?;
+                    let expr = self.expression(Prec::Postfix)?;
                     Expression::Cast(ty, Box::new(expr))
                 } else {
                     let sub_expr = self.expression(Prec::Bottom)?;

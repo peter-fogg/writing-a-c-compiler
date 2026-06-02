@@ -251,11 +251,7 @@ impl TypeChecker {
             } => {
                 let expr = self.check_expr(expr)?;
                 let body = Box::new(self.check_statement(current_fn, *body)?);
-                let cases = if *get_type(&expr) == Type::Long {
-                    convert_long_cases(&cases)
-                } else {
-                    convert_int_cases(&cases)?
-                };
+                let cases = convert_cases(&cases, get_type(&expr))?;
                 Statement::Switch {
                     expr,
                     body,
@@ -606,43 +602,32 @@ impl TypeChecker {
                 let lhs_ty = get_type(&typed_lhs).clone();
                 let rhs_ty = get_type(&typed_rhs).clone();
 
-                let rhs_expr = match (&lhs_ty, &rhs_ty) {
-                    // Variable is a long and operand is an
-                    // int. Convert the operand to a long and do the
-                    // operation.
-                    (Type::Long, Type::Int) => TypedExpression::Binary(
-                        Type::Long,
-                        convert_compound_op(op),
-                        Box::new(typed_lhs.clone()),
-                        Box::new(TypedExpression::Cast(
-                            Type::Long,
-                            Box::new(typed_rhs.clone()),
-                        )),
-                    ),
-                    // Variable is an int and operand is a
-                    // long. Convert both to longs, do the operation,
-                    // then truncate the result to int.
-                    (Type::Int, Type::Long) => TypedExpression::Cast(
-                        Type::Int,
-                        Box::new(TypedExpression::Binary(
-                            Type::Long,
-                            convert_compound_op(op),
-                            Box::new(TypedExpression::Cast(
-                                Type::Long,
-                                Box::new(typed_lhs.clone()),
-                            )),
-                            Box::new(typed_rhs),
-                        )),
-                    ),
-                    // No type conversions
-                    _ => TypedExpression::Binary(
-                        rhs_ty.clone(), // Both types are the same, doesn't matter which we pick
-                        convert_compound_op(op),
-                        Box::new(typed_lhs.clone()),
-                        Box::new(typed_rhs),
-                    ),
+                // Mixed-type binary op rules:
+                // 1. Convert both operands to their common type.
+                //    1a. Unless it's a bitshift, for some reason?
+                // 2. Do the binary operation.
+                // 3. Convert the result to the LHS type.
+                // The cast() function takes care of checking to see
+                // if inserting a Cast expression is actually necessary.
+                let common_type = if matches!(
+                    op,
+                    CompoundOperator::ShiftLeft | CompoundOperator::ShiftRight
+                ) {
+                    lhs_ty.clone()
+                } else {
+                    get_common_type(&lhs_ty, &rhs_ty)?
                 };
-                TypedExpression::Assign(lhs_ty, Box::new(typed_lhs.clone()), Box::new(rhs_expr))
+                let cast_lhs = cast(typed_lhs.clone(), &common_type);
+                let cast_rhs = cast(typed_rhs, &common_type);
+                let binary_operation = TypedExpression::Binary(
+                    common_type,
+                    convert_compound_op(op),
+                    Box::new(cast_lhs),
+                    Box::new(cast_rhs),
+                );
+
+                let rhs_expr = cast(binary_operation, &lhs_ty);
+                TypedExpression::Assign(lhs_ty, Box::new(typed_lhs), Box::new(rhs_expr))
             }
             Expression::Crement(fixity, crement, expr) => {
                 let typed_expr = self.check_expr(*expr)?;
@@ -786,66 +771,43 @@ fn cast(expr: TypedExpression, ty: &Type) -> TypedExpression {
         TypedExpression::Cast(ty.clone(), Box::new(expr))
     }
 }
-// If a switch statement's controlling expression is a long, convert all its cases to longs
-fn convert_long_cases(cases: &Vec<CaseInfo>) -> Vec<CaseInfo> {
-    let mut new_cases = Vec::with_capacity(cases.len());
-    for case in cases {
-        if let CaseInfo::Case {
-            expr: Const::Int(n),
-            label,
-        } = case
-        {
-            new_cases.push(CaseInfo::Case {
-                expr: Const::Long(*n as i64),
-                label: *label,
-            });
-        } else {
-            new_cases.push(case.clone());
-        }
-    }
-    new_cases
-}
 
-// If a switch statement's controlling expression is an int, convert all its cases to ints, truncating them
-fn convert_int_cases(cases: &Vec<CaseInfo>) -> Result<Vec<CaseInfo>, CompileError> {
+// Convert cases of a switch statement to all have the same type as
+// the controlling expression. Additionally check for duplicate cases
+// after said conversion
+fn convert_cases(cases: &Vec<CaseInfo>, ty: &Type) -> Result<Vec<CaseInfo>, CompileError> {
     let mut new_cases = Vec::with_capacity(cases.len());
-    // Check for duplicate values after conversions
     let mut values = HashSet::with_capacity(cases.len());
     for case in cases {
         match case {
-            CaseInfo::Case {
-                expr: Const::Long(n),
-                label,
-            } => {
-                if values.contains(&(*n as i32)) {
+            CaseInfo::Case { expr, label } => {
+                let converted = convert_case(expr, ty);
+                if values.contains(&converted) {
                     return Err(CompileError::Check(format!(
-                        "Duplicate case value after conversion {n}"
+                        "Duplicate case value after conversion {converted:?}"
                     )));
-                } else {
-                    values.insert(*n as i32);
                 }
+                values.insert(converted);
                 new_cases.push(CaseInfo::Case {
-                    expr: Const::Int(*n as i32),
+                    expr: converted,
                     label: *label,
-                });
+                })
             }
-            CaseInfo::Case {
-                expr: Const::Int(n),
-                ..
-            } => {
-                if values.contains(n) {
-                    return Err(CompileError::Check(format!(
-                        "Duplicate case value after conversion {n}"
-                    )));
-                } else {
-                    values.insert(*n);
-                }
-                new_cases.push(case.clone());
-            }
-            _ => new_cases.push(case.clone()),
+            c => new_cases.push(c.clone()),
         }
     }
+
     Ok(new_cases)
+}
+
+fn convert_case(expr: &Const, ty: &Type) -> Const {
+    match ty {
+        Type::Int => Const::Int(actual_value(*expr) as i32),
+        Type::UInt => Const::UInt(actual_value(*expr) as u32),
+        Type::Long => Const::Long(actual_value(*expr)),
+        Type::ULong => Const::ULong(actual_value(*expr) as u64),
+        _ => unreachable!("function type in case expression"),
+    }
 }
 
 // Convert a constant initializer to its declared type

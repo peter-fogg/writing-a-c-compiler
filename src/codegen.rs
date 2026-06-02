@@ -30,6 +30,7 @@ pub enum BinaryOp {
     BitXOr,
     ShiftLeft,
     ShiftRight,
+    ShiftRightLogical,
 }
 
 #[derive(Debug, PartialEq, Clone, Copy)]
@@ -391,7 +392,13 @@ fn assemble_instructions(
             } => {
                 let binop = match binop {
                     tacky::BinaryOp::ShiftLeft => BinaryOp::ShiftLeft,
-                    tacky::BinaryOp::ShiftRight => BinaryOp::ShiftRight,
+                    tacky::BinaryOp::ShiftRight => {
+                        if is_unsigned_type(&src1, symbols) {
+                            BinaryOp::ShiftRightLogical
+                        } else {
+                            BinaryOp::ShiftRight
+                        }
+                    }
                     _ => panic!("unreachable"),
                 };
                 let dst = assemble_val(dst);

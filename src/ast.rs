@@ -58,7 +58,7 @@ pub enum Crement {
     Dec,
 }
 
-#[derive(Debug, PartialEq, Clone, Copy)]
+#[derive(Debug, PartialEq, Eq, Hash, Clone, Copy)]
 pub enum Const {
     Int(i32),
     Long(i64),

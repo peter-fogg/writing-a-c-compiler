@@ -111,7 +111,10 @@ fn emit_instr(instr: Instr, interner: &Interner, file: &mut File) -> Result<()> 
             format!(
                 "\t{}\t{}, {}\n",
                 write_binop(binop, ty),
-                if matches!(binop, BinaryOp::ShiftLeft | BinaryOp::ShiftRight) {
+                if matches!(
+                    binop,
+                    BinaryOp::ShiftLeft | BinaryOp::ShiftRight | BinaryOp::ShiftRightLogical
+                ) {
                     write_operand(src, 1, interner)
                 } else {
                     write_operand(src, bytes(ty), interner)
@@ -242,6 +245,7 @@ fn write_binop(binop: BinaryOp, ty: AsmType) -> String {
         BinaryOp::BitXOr => "xor",
         BinaryOp::ShiftLeft => "shl",
         BinaryOp::ShiftRight => "sar",
+        BinaryOp::ShiftRightLogical => "shr",
     }
     .to_string();
     let suffix = type_suffix(ty);
