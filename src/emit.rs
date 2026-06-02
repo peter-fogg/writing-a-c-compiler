@@ -1,9 +1,11 @@
+use std::io::Error;
 use std::io::Result;
 use std::{fs::File, io::Write};
 
 use crate::codegen::{
     AsmTopLevel, AsmType, Assembly, BinaryOp, CondCode, Instr, Operand, Register, UnaryOp,
 };
+use crate::error::CompileError;
 use crate::interner::Interner;
 use crate::typecheck::StaticInit;
 
@@ -40,7 +42,13 @@ fn emit_top_level(top_level: AsmTopLevel, interner: &Interner, file: &mut File) 
             if global {
                 file.write_all(format!("\t.globl _{}\n", interner.get_symbol(name)).as_bytes())?;
             }
-            if matches!(init, StaticInit::Int(0) | StaticInit::Long(0)) {
+            if matches!(
+                init,
+                StaticInit::Int(0)
+                    | StaticInit::Long(0)
+                    | StaticInit::UInt(0)
+                    | StaticInit::ULong(0)
+            ) {
                 file.write_all("\t.bss\n".as_bytes())?;
             } else {
                 file.write_all("\t.data\n".as_bytes())?;
@@ -56,10 +64,13 @@ fn emit_top_level(top_level: AsmTopLevel, interner: &Interner, file: &mut File) 
 fn format_static_init(init: StaticInit) -> String {
     match init {
         StaticInit::Int(0) => String::from(".zero 4"),
+        StaticInit::UInt(0) => String::from(".zero 4"),
         StaticInit::Int(n) => format!(".long {n}"),
+        StaticInit::UInt(n) => format!(".long {n}"),
         StaticInit::Long(0) => String::from(".zero 8"),
+        StaticInit::ULong(0) => String::from(".zero 8"),
         StaticInit::Long(n) => format!(".quad {n}"),
-        _ => todo!("unsigned"),
+        StaticInit::ULong(n) => format!(".quad {n}"),
     }
 }
 
@@ -117,6 +128,14 @@ fn emit_instr(instr: Instr, interner: &Interner, file: &mut File) -> Result<()> 
             )
             .as_bytes(),
         )?,
+        Instr::Div(ty, operand) => file.write_all(
+            format!(
+                "\tdiv{}\t{}\n",
+                type_suffix(ty),
+                write_operand(operand, bytes(ty), interner)
+            )
+            .as_bytes(),
+        )?,
         Instr::Cdq(AsmType::Longword) => file.write_all("\tcdq\n".as_bytes())?,
         Instr::Cdq(AsmType::Quadword) => file.write_all("\tcqo\n".as_bytes())?,
         Instr::Cmp { ty, lhs, rhs } => file.write_all(
@@ -151,12 +170,11 @@ fn emit_instr(instr: Instr, interner: &Interner, file: &mut File) -> Result<()> 
             file.write_all(format!(".L{}:\n", interner.get_symbol(label)).as_bytes())?
         }
         Instr::Call(name) => {
-            file.write_all(format!("\tcall _{}\n", interner.get_symbol(name)).as_bytes())?
+            file.write_all(format!("\tcall\t_{}\n", interner.get_symbol(name)).as_bytes())?
         }
 
-        Instr::Push(operand) => {
-            file.write_all(format!("\tpushq {}\n", write_operand(operand, 8, interner)).as_bytes())?
-        }
+        Instr::Push(operand) => file
+            .write_all(format!("\tpushq\t{}\n", write_operand(operand, 8, interner)).as_bytes())?,
         Instr::Movsx { src, dst } => file.write_all(
             format!(
                 "\tmovslq\t{}, {}\n",
@@ -165,6 +183,12 @@ fn emit_instr(instr: Instr, interner: &Interner, file: &mut File) -> Result<()> 
             )
             .as_bytes(),
         )?,
+        Instr::MovZeroExtend { .. } => {
+            return Err(CompileError::Emit(String::from(
+                "MovZeroExtend not fixed up",
+            )))
+            .map_err(Error::other);
+        }
     }
     Ok(())
 }
@@ -184,6 +208,10 @@ fn write_cond_code(code: CondCode) -> String {
         CondCode::GE => "ge",
         CondCode::L => "l",
         CondCode::G => "g",
+        CondCode::A => "a",
+        CondCode::AE => "ae",
+        CondCode::B => "b",
+        CondCode::BE => "be",
     }
     .to_string()
 }

@@ -54,6 +54,10 @@ pub enum CondCode {
     GE,
     L,
     LE,
+    A,
+    AE,
+    B,
+    BE,
 }
 
 #[derive(Debug, PartialEq, Clone, Copy)]
@@ -74,6 +78,10 @@ pub enum Instr {
         src: Operand,
         dst: Operand,
     },
+    MovZeroExtend {
+        src: Operand,
+        dst: Operand,
+    },
     Unary {
         ty: AsmType,
         unop: UnaryOp,
@@ -86,6 +94,7 @@ pub enum Instr {
         dst: Operand,
     },
     IDiv(AsmType, Operand),
+    Div(AsmType, Operand),
     Cdq(AsmType),
     Jmp(Symbol),
     JmpCC(CondCode, Symbol),
@@ -132,33 +141,46 @@ pub fn assemble(top_levels: Tacky, symbols: &HashMap<Symbol, (Type, Attrs)>) -> 
 
 fn alignment(ty: &Type) -> u8 {
     match ty {
-        Type::Int => 4,
-        Type::Long => 8,
+        Type::Int | Type::UInt => 4,
+        Type::Long | Type::ULong => 8,
         Type::Fun(_, _) => unreachable!("alignment of function type"),
-        _ => todo!("unsigned"),
     }
 }
 
 fn val_asm_type(val: &Val, symbols: &HashMap<Symbol, (Type, Attrs)>) -> AsmType {
     match val {
-        Val::Constant(Const::Int(_)) => AsmType::Longword,
-        Val::Constant(Const::Long(_)) => AsmType::Quadword,
+        Val::Constant(Const::Int(_) | Const::UInt(_)) => AsmType::Longword,
+        Val::Constant(Const::Long(_) | Const::ULong(_)) => AsmType::Quadword,
         Val::Var(name) => match symbols.get(name) {
             None => unreachable!("unresolved symbol {}", name),
             Some((ty, _)) => ty_asm_type(ty),
         },
-        _ => todo!("unsigned"),
     }
 }
 
 fn ty_asm_type(ty: &Type) -> AsmType {
     match ty {
-        Type::Int => AsmType::Longword,
-        Type::Long => AsmType::Quadword,
+        Type::Int | Type::UInt => AsmType::Longword,
+        Type::Long | Type::ULong => AsmType::Quadword,
         Type::Fun(_, _) => {
             unreachable!("function used as variable post-typechecking")
         }
-        _ => todo!("unsigned"),
+    }
+}
+
+fn is_unsigned_type(val: &Val, symbols: &HashMap<Symbol, (Type, Attrs)>) -> bool {
+    match val {
+        Val::Constant(c) => match c {
+            Const::UInt(_) | Const::ULong(_) => true,
+            _ => false,
+        },
+        Val::Var(name) => match symbols.get(name) {
+            None => unreachable!("unresolved symbol {name}"),
+            Some((ty, _)) => match ty {
+                Type::UInt | Type::ULong => true,
+                _ => false,
+            },
+        },
     }
 }
 
@@ -308,6 +330,40 @@ fn assemble_instructions(
                 src1,
                 src2,
                 dst,
+            } if is_unsigned_type(&src1, symbols) => {
+                let ty = val_asm_type(&src1, symbols);
+                let dst = assemble_val(dst);
+                let src1 = assemble_val(src1);
+                let src2 = assemble_val(src2);
+                let out_reg = if binop == tacky::BinaryOp::Divide {
+                    Register::AX
+                } else {
+                    Register::DX
+                };
+                assembly.extend(vec![
+                    Instr::Mov {
+                        ty,
+                        src: src1,
+                        dst: Operand::Reg(Register::AX),
+                    },
+                    Instr::Mov {
+                        ty,
+                        src: Operand::Imm(0),
+                        dst: Operand::Reg(Register::DX),
+                    },
+                    Instr::Div(ty, src2),
+                    Instr::Mov {
+                        ty,
+                        src: Operand::Reg(out_reg),
+                        dst,
+                    },
+                ])
+            }
+            tacky::Instr::Binary {
+                binop: binop @ (tacky::BinaryOp::Divide | tacky::BinaryOp::Remainder),
+                src1,
+                src2,
+                dst,
             } => {
                 let ty = val_asm_type(&src1, symbols);
                 let dst = assemble_val(dst);
@@ -371,13 +427,38 @@ fn assemble_instructions(
                 src2,
                 dst,
             } if is_comparison(binop) => {
+                let unsigned = is_unsigned_type(&src1, symbols);
                 let code = match binop {
                     tacky::BinaryOp::Equals => CondCode::E,
                     tacky::BinaryOp::NotEquals => CondCode::NE,
-                    tacky::BinaryOp::GreaterThan => CondCode::G,
-                    tacky::BinaryOp::GreaterThanEquals => CondCode::GE,
-                    tacky::BinaryOp::LessThan => CondCode::L,
-                    tacky::BinaryOp::LessThanEquals => CondCode::LE,
+                    tacky::BinaryOp::GreaterThan => {
+                        if unsigned {
+                            CondCode::A
+                        } else {
+                            CondCode::G
+                        }
+                    }
+                    tacky::BinaryOp::GreaterThanEquals => {
+                        if unsigned {
+                            CondCode::AE
+                        } else {
+                            CondCode::GE
+                        }
+                    }
+                    tacky::BinaryOp::LessThan => {
+                        if unsigned {
+                            CondCode::B
+                        } else {
+                            CondCode::L
+                        }
+                    }
+                    tacky::BinaryOp::LessThanEquals => {
+                        if unsigned {
+                            CondCode::BE
+                        } else {
+                            CondCode::LE
+                        }
+                    }
                     _ => unreachable!(),
                 };
                 assembly.extend(vec![
@@ -526,6 +607,10 @@ fn assemble_instructions(
                 src: assemble_val(src),
                 dst: assemble_val(dst),
             }),
+            tacky::Instr::ZeroExtend { src, dst } => assembly.push(Instr::MovZeroExtend {
+                src: assemble_val(src),
+                dst: assemble_val(dst),
+            }),
         }
     }
     assembly
@@ -555,8 +640,9 @@ fn assemble_val(val: Val) -> Operand {
     match val {
         Val::Constant(Const::Int(n)) => Operand::Imm(n.into()),
         Val::Constant(Const::Long(n)) => Operand::Imm(n),
+        Val::Constant(Const::UInt(n)) => Operand::Imm(n.into()),
+        Val::Constant(Const::ULong(n)) => Operand::Imm(n as i64),
         Val::Var(s) => Operand::Pseudo(s),
-        _ => todo!("unsigned"),
     }
 }
 
@@ -614,6 +700,14 @@ fn replace_pseudo(instrs: &mut [Instr], symbols: &HashMap<Symbol, AsmEntry>) -> 
                 let op = replace_op(op, &mut replace_state);
                 *instr = Instr::IDiv(ty, op);
             }
+            Instr::Div(_, _) => {
+                let div = std::mem::replace(instr, Instr::Ret);
+                let Instr::Div(ty, op) = div else {
+                    panic!("unreachable")
+                };
+                let op = replace_op(op, &mut replace_state);
+                *instr = Instr::Div(ty, op);
+            }
             Instr::Mov { .. } => {
                 let mov = std::mem::replace(instr, Instr::Ret);
                 let Instr::Mov { ty, src, dst } = mov else {
@@ -635,6 +729,18 @@ fn replace_pseudo(instrs: &mut [Instr], symbols: &HashMap<Symbol, AsmEntry>) -> 
                 let new_src = replace_op(src, &mut replace_state);
                 let new_dst = replace_op(dst, &mut replace_state);
                 *instr = Instr::Movsx {
+                    src: new_src,
+                    dst: new_dst,
+                };
+            }
+            Instr::MovZeroExtend { .. } => {
+                let movzx = std::mem::replace(instr, Instr::Ret);
+                let Instr::MovZeroExtend { src, dst } = movzx else {
+                    panic!("unreachable")
+                };
+                let new_src = replace_op(src, &mut replace_state);
+                let new_dst = replace_op(dst, &mut replace_state);
+                *instr = Instr::MovZeroExtend {
                     src: new_src,
                     dst: new_dst,
                 };
@@ -842,6 +948,7 @@ fn fixup_instructions(instrs: Vec<Instr>) -> Vec<Instr> {
                     },
                 ])
             }
+            // idiv can't use an immediate as its destination so move into a register
             Instr::IDiv(ty, Operand::Imm(n)) => fixed.extend(vec![
                 Instr::Mov {
                     ty,
@@ -849,6 +956,15 @@ fn fixup_instructions(instrs: Vec<Instr>) -> Vec<Instr> {
                     dst: Operand::Reg(Register::R10),
                 },
                 Instr::IDiv(ty, Operand::Reg(Register::R10)),
+            ]),
+            // div can't use an immediate as its destination so move into a register
+            Instr::Div(ty, Operand::Imm(n)) => fixed.extend(vec![
+                Instr::Mov {
+                    ty,
+                    src: Operand::Imm(n),
+                    dst: Operand::Reg(Register::R10),
+                },
+                Instr::Div(ty, Operand::Reg(Register::R10)),
             ]),
             Instr::Cmp {
                 ty,
@@ -930,14 +1046,41 @@ fn fixup_instructions(instrs: Vec<Instr>) -> Vec<Instr> {
                 });
                 fixed.extend(post_instr);
             }
+            Instr::MovZeroExtend {
+                src,
+                dst: Operand::Reg(reg),
+            } =>
+            // Zero extending by moving into a register
+            {
+                fixed.push(Instr::Mov {
+                    ty: AsmType::Longword,
+                    src,
+                    dst: Operand::Reg(reg),
+                })
+            }
+            // Move into a register then back to memory
+            Instr::MovZeroExtend { src, dst } if is_memory(&dst) => fixed.extend(vec![
+                Instr::Mov {
+                    ty: AsmType::Longword,
+                    src,
+                    dst: Operand::Reg(Register::R11),
+                },
+                Instr::Mov {
+                    ty: AsmType::Quadword,
+                    src: Operand::Reg(Register::R11),
+                    dst,
+                },
+            ]),
             i => fixed.push(i),
         }
     }
     fixed
 }
 
+// Determine if a constant is in the 32-bit range. In order to avoid
+// issues comparing signed and unsigned numbers, we bitcast both to u64
 fn in_int_range(n: i64) -> bool {
-    n <= i32::MAX.into()
+    n as u64 <= i32::MAX as u64
 }
 
 pub enum AsmEntry {

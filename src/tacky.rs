@@ -5,7 +5,7 @@ use crate::ast::{
     Program, Statement, Type, UnaryOperator, Var,
 };
 use crate::interner::{Interner, Symbol};
-use crate::typecheck::{Attrs, InitValue, StaticInit, TypedExpression, get_type};
+use crate::typecheck::{Attrs, InitValue, StaticInit, TypedExpression, get_type, signed, size};
 
 #[derive(Debug, PartialEq, Clone, Copy)]
 pub enum UnaryOp {
@@ -80,6 +80,10 @@ pub enum Instr {
         dst: Val,
     },
     Truncate {
+        src: Val,
+        dst: Val,
+    },
+    ZeroExtend {
         src: Val,
         dst: Val,
     },
@@ -565,16 +569,27 @@ impl<'a> TackifyState<'a> {
             }
             TypedExpression::Cast(ty, expr) => {
                 let src = self.tackify_expr(*expr.clone(), instrs);
-                if ty == *get_type(&expr) {
+                let expr_type = get_type(&expr);
+                if ty == *expr_type {
                     return src;
                 }
                 let dst = self.new_var(ty.clone(), "cast");
 
-                if ty == Type::Long {
+                // unwrap is safe because we have passed typechecking
+                // and there can be no function types here
+                let expr_size = size(expr_type).unwrap();
+                let cast_size = size(&ty).unwrap();
+
+                if cast_size == expr_size {
+                    instrs.push(Instr::Copy { src, dst })
+                } else if cast_size < expr_size {
+                    instrs.push(Instr::Truncate { src, dst })
+                } else if signed(expr_type) {
                     instrs.push(Instr::SignExtend { src, dst });
                 } else {
-                    instrs.push(Instr::Truncate { src, dst })
+                    instrs.push(Instr::ZeroExtend { src, dst });
                 }
+
                 dst
             }
         }

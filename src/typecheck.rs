@@ -737,7 +737,7 @@ fn const_type(c: &Const) -> Type {
 }
 
 // Return size in bytes of the given type
-fn size(t: &Type) -> Result<u8, CompileError> {
+pub fn size(t: &Type) -> Result<u8, CompileError> {
     Ok(match t {
         Type::Int => 4,
         Type::UInt => 4,
@@ -751,7 +751,7 @@ fn size(t: &Type) -> Result<u8, CompileError> {
     })
 }
 
-fn signed(t: &Type) -> bool {
+pub fn signed(t: &Type) -> bool {
     match t {
         Type::Int | Type::Long => true,
         _ => false,

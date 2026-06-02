@@ -1,11 +1,13 @@
 use std::{env, fs, path};
 
+use error::CompileError;
 use parser::Parser;
 use semantic_analysis::analyze;
 
 mod ast;
 mod codegen;
 mod emit;
+mod error;
 mod interner;
 mod lexer;
 mod parser;
@@ -13,18 +15,6 @@ mod pretty;
 mod semantic_analysis;
 mod tacky;
 mod typecheck;
-
-#[derive(Debug)]
-pub enum CompileError {
-    Check(String),
-    Emit(String),
-    Assemble(String),
-    Execute(String),
-    Preprocess(String),
-    FileRead(String),
-    Parse(String),
-    Lex(String),
-}
 
 fn main() -> Result<(), CompileError> {
     let mut args = env::args().collect::<Vec<String>>();
