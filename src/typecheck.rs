@@ -10,7 +10,7 @@ use crate::ast::{
     BinaryOperator, BlockItem, CaseInfo, Const, Crement, Declaration, Expression, Fixity, ForInit,
     Function, Program, Statement, StorageClass, Type, UnaryOperator, Var,
 };
-use crate::interner::Symbol;
+use crate::interner::{Interner, Symbol};
 use crate::semantic_analysis::actual_value;
 
 #[derive(Debug, PartialEq, Clone)]
@@ -58,19 +58,22 @@ pub enum StaticInit {
     ULong(u64),
 }
 
-pub struct TypeChecker {
+pub struct TypeChecker<'a> {
     symbols: HashMap<Symbol, (Type, Attrs)>,
+    interner: &'a Interner,
 }
 
 pub type CheckResult = (Program<TypedExpression>, HashMap<Symbol, (Type, Attrs)>);
 
-impl TypeChecker {
+impl<'a> TypeChecker<'a> {
     pub fn check_program(
         program: Vec<Declaration<Expression>>,
+        interner: &'a Interner,
     ) -> Result<CheckResult, CompileError> {
         //todo define a type alias here
         let mut type_checker = TypeChecker {
             symbols: HashMap::new(),
+            interner,
         };
 
         let mut typed_decls = Vec::with_capacity(program.len());
@@ -111,27 +114,27 @@ impl TypeChecker {
                 if ty != *fun_type {
                     return Err(CompileError::Check(format!(
                         "Function {} redeclared with different type",
-                        name
+                        self.interner.get_symbol(name)
                     )));
                 }
                 if *defined && body.is_some() {
                     return Err(CompileError::Check(format!(
                         "Duplicate definition of function {}",
-                        name
+                        self.interner.get_symbol(name)
                     )));
                 }
                 already_defined = *defined;
                 if *old_global && storage == Some(StorageClass::Static) {
                     return Err(CompileError::Check(format!(
                         "Static function declaration {} follows non-static",
-                        name
+                        self.interner.get_symbol(name)
                     )));
                 }
                 global = *old_global;
             } else {
                 return Err(CompileError::Check(format!(
                     "Function {} already defined as variable",
-                    name
+                    self.interner.get_symbol(name)
                 )));
             }
         }
@@ -294,7 +297,7 @@ impl TypeChecker {
             _ => {
                 return Err(CompileError::Check(format!(
                     "Non-constant initialization of variable {}",
-                    name
+                    self.interner.get_symbol(name)
                 )));
             }
         };
@@ -304,7 +307,7 @@ impl TypeChecker {
             Some((declared_ty, _)) if *declared_ty != ty => {
                 return Err(CompileError::Check(format!(
                     "Conflicting declaration of variable {}",
-                    name
+                    self.interner.get_symbol(name)
                 )));
             }
             Some((
@@ -319,14 +322,14 @@ impl TypeChecker {
                 } else if *old_global != global {
                     return Err(CompileError::Check(format!(
                         "Conflicting linkage of variable {}",
-                        name
+                        self.interner.get_symbol(name)
                     )));
                 }
                 if let InitValue::Initial(_) = old_init {
                     if let InitValue::Initial(_) = init_attr {
                         return Err(CompileError::Check(format!(
                             "Conflicting file scope definitions of variable {}",
-                            name
+                            self.interner.get_symbol(name)
                         )));
                     }
                     init_attr = *old_init;
@@ -396,7 +399,7 @@ impl TypeChecker {
                 if init.is_some() {
                     return Err(CompileError::Check(format!(
                         "Initializer on local extern declaration {}",
-                        name
+                        self.interner.get_symbol(name)
                     )));
                 }
                 // Check for an earlier declaration with a different type
@@ -429,7 +432,7 @@ impl TypeChecker {
                     _ => {
                         return Err(CompileError::Check(format!(
                             "Non-constant initialization of variable {}",
-                            name
+                            self.interner.get_symbol(name)
                         )));
                     }
                 };
@@ -477,7 +480,9 @@ impl TypeChecker {
         {
             return Err(CompileError::Check(format!(
                 "Variable {} originally declared as {:?} and redeclared as {:?}",
-                name, declared_ty, ty
+                self.interner.get_symbol(*name),
+                declared_ty,
+                ty
             )));
         }
         Ok(())
@@ -495,7 +500,7 @@ impl TypeChecker {
             }) => {
                 return Err(CompileError::Check(format!(
                     "Static initializer {} in for loop",
-                    name
+                    self.interner.get_symbol(name)
                 )));
             }
             ForInit::Decl(var) => ForInit::Decl(self.check_block_var_decl(var)?),
@@ -512,7 +517,7 @@ impl TypeChecker {
                 if let Type::Fun(_, _) = v_type {
                     return Err(CompileError::Check(format!(
                         "Function {} used as variable",
-                        id
+                        self.interner.get_symbol(id)
                     )));
                 }
                 TypedExpression::Var(v_type, id)
@@ -639,7 +644,7 @@ impl TypeChecker {
                         if param_tys.len() != params.len() {
                             return Err(CompileError::Check(format!(
                                 "Function {} expected {} params and got {}",
-                                name,
+                                self.interner.get_symbol(name),
                                 param_tys.len(),
                                 params.len()
                             )));
@@ -654,7 +659,7 @@ impl TypeChecker {
                     _ => {
                         return Err(CompileError::Check(format!(
                             "Variable {} used as function name",
-                            name
+                            self.interner.get_symbol(name)
                         )));
                     }
                 }

@@ -8,6 +8,5 @@
 - include span info in AST before semantic analysis so that we can
   report better errors -- consider giving each AST node a unique ID that can be used as a key into a map. this would also allow making types and case info separate maps as well
 - implement function to guess which parameter is missing/added in incorrect function calls. Levenshtein distance on parameter types? sure i guess
-- add interner to typecheck in order to resolve symbols to proper variable names
 - separate Type into another place... typechecking module maybe?
 - rewrite lexer to use regular expressions?

@@ -393,7 +393,7 @@ pub fn analyze(
         }
     }
 
-    TypeChecker::check_program(analyzed)
+    TypeChecker::check_program(analyzed, interner)
 }
 
 fn check_labels(Function { body, .. }: &Function<Expression>) {
