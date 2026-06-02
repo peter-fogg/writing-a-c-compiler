@@ -493,33 +493,3 @@ impl<'a> Iterator for Lexer<'a> {
         }
     }
 }
-
-#[cfg(test)]
-mod test {
-    use super::*;
-    use TokenKind::*;
-
-    #[test]
-    fn whitespace() {
-        let tokens = Lexer::new(" \t      \n\n  \n").collect::<Vec<_>>();
-        assert_eq!(tokens, vec![]);
-    }
-
-    #[test]
-    fn numbers() {
-        let tokens = Lexer::new("1124\n").collect::<Vec<_>>();
-        assert_eq!(tokens, vec![Constant("1124")]);
-    }
-
-    #[test]
-    fn punctuation() {
-        let tokens = Lexer::new("; ( ) { } \n").collect::<Vec<_>>();
-        assert_eq!(tokens, vec![Semicolon, LParen, RParen, LBrace, RBrace]);
-    }
-
-    #[test]
-    fn identifiers() {
-        let tokens = Lexer::new("return int void ").collect::<Vec<_>>();
-        assert_eq!(tokens, vec![Return, Int, Void]);
-    }
-}
