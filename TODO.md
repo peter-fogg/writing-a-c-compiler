@@ -3,7 +3,6 @@
 - after that, implement more resilient parsing for multiple parse errors
 - more resilient semantic analysis
 - comment code throughout
-- update pretty printer to work better with Symbols
 - make pretty printer just a Display impl?
 - include span info in AST before semantic analysis so that we can
   report better errors -- consider giving each AST node a unique ID that can be used as a key into a map. this would also allow making types and case info separate maps as well

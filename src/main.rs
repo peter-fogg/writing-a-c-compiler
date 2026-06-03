@@ -74,12 +74,12 @@ fn compile_file(
     }
     let parsed = Parser::new(lexed, &mut interner)?.parse()?;
     if rest_args.iter().any(|s| s == "--parse") {
-        println!("{:?}", pretty::print_program(&parsed));
+        println!("{:?}", pretty::print_program(&parsed, &interner));
         std::process::exit(0);
     }
     let (analyzed, mut symbols) = analyze(parsed, &mut interner)?;
     if rest_args.iter().any(|s| s == "--validate") {
-        println!("{:?}", pretty::print_program(&analyzed));
+        println!("{:?}", pretty::print_program(&analyzed, &interner));
         std::process::exit(0);
     }
     let tackified = tacky::emit_tacky(analyzed, &mut symbols, &mut interner);
