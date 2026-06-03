@@ -15,4 +15,5 @@ I'm working through Nora Sandler's Writing a C Compiler in Rust. Goals are:
 
 - Have a nice time I guess?
 
-The project is through chapter 11 (long ints) as of late May 2026.
+The project is through chapter 12 (unsigned ints) along with all the
+ preceding extra credit as of early June 2026.
