@@ -145,6 +145,7 @@ fn alignment(ty: &Type) -> u8 {
         Type::Int | Type::UInt => 4,
         Type::Long | Type::ULong => 8,
         Type::Fun(_, _) => unreachable!("alignment of function type"),
+        Type::Double => todo!(),
     }
 }
 
@@ -152,6 +153,7 @@ fn val_asm_type(val: &Val, symbols: &HashMap<Symbol, (Type, Attrs)>) -> AsmType 
     match val {
         Val::Constant(Const::Int(_) | Const::UInt(_)) => AsmType::Longword,
         Val::Constant(Const::Long(_) | Const::ULong(_)) => AsmType::Quadword,
+        Val::Constant(Const::Double(_)) => todo!(),
         Val::Var(name) => match symbols.get(name) {
             None => unreachable!("unresolved symbol {}", name),
             Some((ty, _)) => ty_asm_type(ty),
@@ -166,6 +168,7 @@ fn ty_asm_type(ty: &Type) -> AsmType {
         Type::Fun(_, _) => {
             unreachable!("function used as variable post-typechecking")
         }
+        Type::Double => todo!(),
     }
 }
 
@@ -643,6 +646,7 @@ fn assemble_val(val: Val) -> Operand {
         Val::Constant(Const::Long(n)) => Operand::Imm(n),
         Val::Constant(Const::UInt(n)) => Operand::Imm(n.into()),
         Val::Constant(Const::ULong(n)) => Operand::Imm(n as i64),
+        Val::Constant(Const::Double(_n)) => todo!(),
         Val::Var(s) => Operand::Pseudo(s),
     }
 }

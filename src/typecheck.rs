@@ -2,7 +2,7 @@
 // Result<TypedExpression, SomeKindaError>. The file is short enough
 // that this will be a good test for the parser.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 use crate::CompileError;
 
@@ -36,26 +36,27 @@ pub enum TypedExpression {
     Cast(Type, Box<TypedExpression>),
 }
 
-#[derive(PartialEq, Eq, Debug, Copy, Clone)]
+#[derive(PartialEq, Debug, Copy, Clone)]
 pub enum Attrs {
     Fun { defined: bool, global: bool },
     Static { init: InitValue, global: bool },
     Local,
 }
 
-#[derive(PartialEq, Eq, Debug, Copy, Clone)]
+#[derive(PartialEq, Debug, Copy, Clone)]
 pub enum InitValue {
     Tentative,
     Initial(StaticInit),
     NoInit,
 }
 
-#[derive(PartialEq, Eq, Debug, Copy, Clone)]
+#[derive(PartialEq, Debug, Copy, Clone)]
 pub enum StaticInit {
     Int(i32),
     Long(i64),
     UInt(u32),
     ULong(u64),
+    Double(f64),
 }
 
 pub struct TypeChecker<'a> {
@@ -253,8 +254,14 @@ impl<'a> TypeChecker<'a> {
                 cases,
             } => {
                 let expr = self.check_expr(expr)?;
+                let expr_ty = get_type(&expr);
+                if *expr_ty == Type::Double {
+                    return Err(CompileError::Check(String::from(
+                        "can't use a double as switch expression",
+                    )));
+                }
                 let body = Box::new(self.check_statement(current_fn, *body)?);
-                let cases = convert_cases(&cases, get_type(&expr))?;
+                let cases = convert_cases(&cases, expr_ty)?;
                 Statement::Switch {
                     expr,
                     body,
@@ -428,7 +435,7 @@ impl<'a> TypeChecker<'a> {
                         Type::Long => StaticInit::Long(0),
                         _ => StaticInit::Int(0),
                     },
-                    Some(Expression::Constant(n)) => Self::compile_time_cast(n, ty.clone()),
+                    Some(Expression::Constant(n)) => cast_init(n, &ty),
                     _ => {
                         return Err(CompileError::Check(format!(
                             "Non-constant initialization of variable {}",
@@ -458,19 +465,6 @@ impl<'a> TypeChecker<'a> {
                     ty,
                 })
             }
-        }
-    }
-
-    // Convert a static initializer to its declared type at compile time.
-    // This is something of a monstrosity and when I'm feeling less dumb I'll
-    // do it a better way.
-    fn compile_time_cast(init: Const, declared_ty: Type) -> StaticInit {
-        match (init, declared_ty) {
-            (Const::Int(n), Type::Int) => StaticInit::Int(n),
-            (Const::Long(n), Type::Long) => StaticInit::Long(n),
-            (Const::Int(n), Type::Long) => StaticInit::Long(n as i64),
-            (Const::Long(n), Type::Int) => StaticInit::Int(n as i32),
-            _ => unreachable!("Non-constant type for static variable"),
         }
     }
 
@@ -529,6 +523,11 @@ impl<'a> TypeChecker<'a> {
             }
             Expression::Unary(unop, expr) => {
                 let typed_expr = self.check_expr(*expr)?;
+                if unop == UnaryOperator::Complement && *get_type(&typed_expr) == Type::Double {
+                    return Err(CompileError::Check(String::from(
+                        "can't take the bitwise complement of a double",
+                    )));
+                }
                 let ty = match unop {
                     UnaryOperator::Not => Type::Int,
                     _ => get_type(&typed_expr).clone(),
@@ -549,6 +548,22 @@ impl<'a> TypeChecker<'a> {
 
                 let left_ty = get_type(&typed_lhs);
                 let ty = get_common_type(get_type(&typed_lhs), get_type(&typed_rhs))?;
+                if matches!(
+                    binop,
+                    BinaryOperator::Remainder
+                        | BinaryOperator::BitAnd
+                        | BinaryOperator::BitOr
+                        | BinaryOperator::BitXOr
+                        | BinaryOperator::ShiftLeft
+                        | BinaryOperator::ShiftRight
+                ) && ty == Type::Double
+                {
+                    return Err(CompileError::Check(format!(
+                        "invalid operation {:?} with double",
+                        binop,
+                    )));
+                }
+
                 let cast_lhs = cast(typed_lhs.clone(), &ty);
                 let cast_rhs = cast(typed_rhs.clone(), &ty);
 
@@ -606,6 +621,21 @@ impl<'a> TypeChecker<'a> {
 
                 let lhs_ty = get_type(&typed_lhs).clone();
                 let rhs_ty = get_type(&typed_rhs).clone();
+                if matches!(
+                    op,
+                    BinaryOperator::Remainder
+                        | BinaryOperator::BitAnd
+                        | BinaryOperator::BitOr
+                        | BinaryOperator::BitXOr
+                        | BinaryOperator::ShiftLeft
+                        | BinaryOperator::ShiftRight
+                ) && (lhs_ty == Type::Double || rhs_ty == Type::Double)
+                {
+                    return Err(CompileError::Check(format!(
+                        "invalid operation {:?} with double",
+                        op,
+                    )));
+                }
 
                 // Mixed-type binary op rules:
                 // 1. Convert both operands to their common type.
@@ -705,17 +735,16 @@ fn const_type(c: &Const) -> Type {
         Const::Long(_) => Type::Long,
         Const::UInt(_) => Type::UInt,
         Const::ULong(_) => Type::ULong,
+        Const::Double(_) => Type::Double,
     }
 }
 
 // Return size in bytes of the given type
 pub fn size(t: &Type) -> Result<u8, CompileError> {
     Ok(match t {
-        Type::Int => 4,
-        Type::UInt => 4,
-        Type::Long => 8,
-        Type::ULong => 8,
-        _ => {
+        Type::Int | Type::UInt => 4,
+        Type::Long | Type::ULong | Type::Double => 8,
+        Type::Fun(_, _) => {
             return Err(CompileError::Check(String::from(
                 "Can't get size of a function type",
             )));
@@ -732,6 +761,10 @@ pub fn signed(t: &Type) -> bool {
 fn get_common_type(t1: &Type, t2: &Type) -> Result<Type, CompileError> {
     if t1 == t2 {
         return Ok(t1.clone());
+    }
+
+    if *t1 == Type::Double || *t2 == Type::Double {
+        return Ok(Type::Double);
     }
 
     if size(t1)? == size(t2)? {
@@ -765,17 +798,20 @@ fn cast(expr: TypedExpression, ty: &Type) -> TypedExpression {
 // after said conversion
 fn convert_cases(cases: &Vec<CaseInfo>, ty: &Type) -> Result<Vec<CaseInfo>, CompileError> {
     let mut new_cases = Vec::with_capacity(cases.len());
-    let mut values = HashSet::with_capacity(cases.len());
+    let mut values = Vec::with_capacity(cases.len());
     for case in cases {
         match case {
             CaseInfo::Case { expr, label } => {
+                if matches!(expr, Const::Double(_)) {
+                    return Err(CompileError::Check(format!("Double case {expr}")));
+                }
                 let converted = convert_case(expr, ty);
                 if values.contains(&converted) {
                     return Err(CompileError::Check(format!(
                         "Duplicate case value after conversion {converted:?}"
                     )));
                 }
-                values.insert(converted);
+                values.push(converted);
                 new_cases.push(CaseInfo::Case {
                     expr: converted,
                     label: *label,
@@ -794,7 +830,8 @@ fn convert_case(expr: &Const, ty: &Type) -> Const {
         Type::UInt => Const::UInt(actual_value(*expr) as u32),
         Type::Long => Const::Long(actual_value(*expr)),
         Type::ULong => Const::ULong(actual_value(*expr) as u64),
-        _ => unreachable!("function type in case expression"),
+        Type::Double => Const::Double(actual_value(*expr) as f64),
+        Type::Fun(_, _) => unreachable!("function type in case expression"),
     }
 }
 
@@ -805,6 +842,7 @@ fn cast_init(const_init: Const, ty: &Type) -> StaticInit {
         Type::UInt => StaticInit::UInt(actual_value(const_init) as u32),
         Type::Long => StaticInit::Long(actual_value(const_init)),
         Type::ULong => StaticInit::ULong(actual_value(const_init) as u64),
-        _ => unreachable!("function type in constant initializer"),
+        Type::Double => StaticInit::Double(actual_value(const_init) as f64),
+        Type::Fun(_, _) => unreachable!("function type in constant initializer"),
     }
 }

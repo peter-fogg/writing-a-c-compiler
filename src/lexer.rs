@@ -18,6 +18,8 @@ pub enum TokenKind<'a> {
     LongConstant(&'a str),
     UnsignedConstant(&'a str),
     UnsignedLongConstant(&'a str),
+    DoubleConstant(&'a str),
+    Double,
     Signed,
     Unsigned,
     Semicolon,
@@ -97,14 +99,57 @@ impl<'a> Lexer<'a> {
         }
     }
 
-    pub fn constant(&mut self) -> Result<Token<'a>, CompileError> {
+    fn chomp_digits(&mut self) -> (usize, char) {
         let (mut end, mut c) = *self.peek().unwrap();
-        let start = end - 1;
-
         while Self::is_digit(c) {
             self.next_char();
             (end, c) = *self.peek().unwrap();
         }
+        (end, c)
+    }
+
+    fn double(&mut self, start: usize) -> Result<Token<'a>, CompileError> {
+        println!("double");
+        let (mut end, mut c) = *self.peek().unwrap();
+
+        if c == '.' {
+            self.next_char();
+            (end, c) = self.chomp_digits();
+        }
+        if "eE".contains(c) {
+            self.next_char();
+            (end, c) = self.next_char().unwrap();
+            if "+-".contains(c) {
+                (end, c) = self.next_char().unwrap();
+            }
+            if !Self::is_digit(c) {
+                return Err(CompileError::Lex(format!(
+                    "Double constant without exponent digits: {}",
+                    self.source.get(start..end).unwrap()
+                )));
+            }
+            (end, _) = self.chomp_digits();
+        }
+
+        let digits = self.source.get(start..end).unwrap();
+        Ok(Token {
+            kind: TokenKind::DoubleConstant(digits),
+            start,
+            end,
+            line: self.line,
+        })
+    }
+
+    pub fn constant(&mut self) -> Result<Token<'a>, CompileError> {
+        let (end, _) = *self.peek().unwrap();
+        let start = end - 1;
+
+        let (end, mut c) = self.chomp_digits();
+
+        if "eE.".contains(c) {
+            return self.double(start);
+        }
+
         let mut suffix_end = end;
         while "ul".contains(c.to_ascii_lowercase()) {
             self.next_char();
@@ -178,6 +223,7 @@ impl<'a> Lexer<'a> {
             "long" => TokenKind::Long,
             "signed" => TokenKind::Signed,
             "unsigned" => TokenKind::Unsigned,
+            "double" => TokenKind::Double,
             _ => TokenKind::Id(id),
         };
 
@@ -248,10 +294,15 @@ impl<'a> Iterator for Lexer<'a> {
                 c if Self::is_whitespace(c) => {
                     continue;
                 }
+                '.' => {
+                    self.chomp_digits();
+                    let number = self.double(start);
+                    return Some(number);
+                }
                 c if Self::is_digit(c) => {
                     let number = self.constant();
                     if let Some((_, next_c)) = self.peek()
-                        && Self::is_alpha(*next_c)
+                        && (Self::is_alpha(*next_c) || *next_c == '.')
                     {
                         return Some(Err(CompileError::Lex("Bad token".to_string())));
                     }

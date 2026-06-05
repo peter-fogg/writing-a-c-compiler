@@ -44,12 +44,13 @@ pub enum Crement {
     Dec,
 }
 
-#[derive(Debug, PartialEq, Eq, Hash, Clone, Copy)]
+#[derive(Debug, PartialEq, Clone, Copy)]
 pub enum Const {
     Int(i32),
     Long(i64),
     UInt(u32),
     ULong(u64),
+    Double(f64),
 }
 
 impl Display for Const {
@@ -59,6 +60,7 @@ impl Display for Const {
             Const::Long(n) => write!(f, "{}", n),
             Const::UInt(n) => write!(f, "{}", n),
             Const::ULong(n) => write!(f, "{}", n),
+            Const::Double(n) => write!(f, "{}", n),
         }
     }
 }
@@ -132,6 +134,7 @@ pub enum Type {
     Long,
     UInt,
     ULong,
+    Double,
     Fun(Vec<Type>, Box<Type>),
 }
 

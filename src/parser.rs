@@ -190,7 +190,8 @@ impl<'a> Parser<'a> {
                 kind @ (TokenKind::Int
                 | TokenKind::Long
                 | TokenKind::Unsigned
-                | TokenKind::Signed) => types.push(kind),
+                | TokenKind::Signed
+                | TokenKind::Double) => types.push(kind),
                 TokenKind::Static | TokenKind::Extern => storage_classes.push(specifier.kind),
                 _ => {
                     return Err(
@@ -214,6 +215,16 @@ impl<'a> Parser<'a> {
     fn consolidate_type_specifier(&self, types: Vec<TokenKind<'a>>) -> ParseResult<Type> {
         if types.is_empty() {
             return Err(self.report_error(String::from("Empty type specifier list")));
+        }
+
+        if types.contains(&TokenKind::Double) {
+            if types.len() > 1 {
+                return Err(self.report_error(format!(
+                    "double combined with other type specs: {:?}",
+                    types
+                )));
+            }
+            return Ok(Type::Double);
         }
 
         if types.contains(&TokenKind::Signed) && types.contains(&TokenKind::Unsigned) {
@@ -254,7 +265,8 @@ impl<'a> Parser<'a> {
                 kind @ (TokenKind::Int
                 | TokenKind::Long
                 | TokenKind::Unsigned
-                | TokenKind::Signed) => types.push(kind),
+                | TokenKind::Signed
+                | TokenKind::Double) => types.push(kind),
                 _ => unreachable!(),
             }
             self.advance()?;
@@ -478,26 +490,30 @@ impl<'a> Parser<'a> {
             TokenKind::Constant(n) => match n.parse::<i32>() {
                 Ok(n) => Const::Int(n),
                 Err(_) => Const::Long(n.parse::<i64>().map_err(|_| {
-                    CompileError::Parse(String::from(
-                        "Promoted signed from 32 to 64 bits and it still doesn't work!",
+                    CompileError::Parse(format!(
+                        "Promoted signed {n} from 32 to 64 bits and it still doesn't work!",
                     ))
                 })?),
             },
             TokenKind::UnsignedConstant(n) => match n.parse::<u32>() {
                 Ok(n) => Const::UInt(n),
                 Err(_) => Const::ULong(n.parse::<u64>().map_err(|_| {
-                    CompileError::Parse(String::from(
-                        "Promoted unsigned from 32 to 64 bits and it still doesn't work!",
+                    CompileError::Parse(format!(
+                        "Promoted unsigned {n} from 32 to 64 bits and it still doesn't work!",
                     ))
                 })?),
             },
             TokenKind::LongConstant(n) => Const::Long(
                 n.parse::<i64>()
-                    .map_err(|_| CompileError::Parse(String::from("Error parsing 64-bit int")))?,
+                    .map_err(|_| CompileError::Parse(format!("Error parsing 64-bit int {n}")))?,
             ),
             TokenKind::UnsignedLongConstant(n) => Const::ULong(n.parse::<u64>().map_err(|_| {
-                CompileError::Parse(String::from("Error parsing 64-bit unsigned int"))
+                CompileError::Parse(format!("Error parsing 64-bit unsigned int {n}"))
             })?),
+            TokenKind::DoubleConstant(n) => Const::Double(
+                n.parse::<f64>()
+                    .map_err(|_| CompileError::Parse(format!("Error parsing double {n}")))?,
+            ),
             err => return Err(self.report_error(format!("bad numeric parse: {:?}", err))),
         };
         self.advance()?;
@@ -656,7 +672,8 @@ impl<'a> Parser<'a> {
             TokenKind::UnsignedConstant(_)
             | TokenKind::UnsignedLongConstant(_)
             | TokenKind::LongConstant(_)
-            | TokenKind::Constant(_) => self.constant()?,
+            | TokenKind::Constant(_)
+            | TokenKind::DoubleConstant(_) => self.constant()?,
             TokenKind::LParen => {
                 self.consume(TokenKind::LParen)?;
                 if Self::is_type(self.current()) {
@@ -795,13 +812,18 @@ impl<'a> Parser<'a> {
                 | TokenKind::Unsigned
                 | TokenKind::Extern
                 | TokenKind::Static
+                | TokenKind::Double
         )
     }
 
     fn is_type(t: Token<'a>) -> bool {
         matches!(
             t.kind,
-            TokenKind::Long | TokenKind::Int | TokenKind::Signed | TokenKind::Unsigned
+            TokenKind::Long
+                | TokenKind::Int
+                | TokenKind::Signed
+                | TokenKind::Unsigned
+                | TokenKind::Double
         )
     }
 

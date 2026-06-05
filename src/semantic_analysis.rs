@@ -654,6 +654,7 @@ pub fn actual_value(c: Const) -> i64 {
         Const::Long(n) => n,
         Const::UInt(n) => n as i64,
         Const::ULong(n) => n as i64,
+        Const::Double(n) => n as i64, // TODO: this seems sketch -- should it be a straight bitwise cast?
     }
 }
 
