@@ -11,7 +11,7 @@ use crate::ast::{
     Function, Program, Statement, StorageClass, Type, UnaryOperator, Var,
 };
 use crate::interner::{Interner, Symbol};
-use crate::semantic_analysis::actual_value;
+use crate::semantic_analysis::actual_case_value;
 
 #[derive(Debug, PartialEq, Clone)]
 pub enum TypedExpression {
@@ -146,13 +146,13 @@ impl<'a> TypeChecker<'a> {
 
         self.symbols.insert(name, (ty.clone(), attrs));
 
-        let Type::Fun(_, ret_ty) = ty.clone() else {
+        let Type::Fun(param_tys, ret_ty) = ty.clone() else {
             unreachable!("")
         };
 
         let body = match body {
             Some(block_items) => {
-                for (param, param_ty) in &params {
+                for (param, param_ty) in params.iter().zip(param_tys) {
                     self.symbols
                         .insert(*param, (param_ty.clone(), Attrs::Local));
                 }
@@ -826,23 +826,49 @@ fn convert_cases(cases: &Vec<CaseInfo>, ty: &Type) -> Result<Vec<CaseInfo>, Comp
 
 fn convert_case(expr: &Const, ty: &Type) -> Const {
     match ty {
-        Type::Int => Const::Int(actual_value(*expr) as i32),
-        Type::UInt => Const::UInt(actual_value(*expr) as u32),
-        Type::Long => Const::Long(actual_value(*expr)),
-        Type::ULong => Const::ULong(actual_value(*expr) as u64),
-        Type::Double => Const::Double(actual_value(*expr) as f64),
+        Type::Int => Const::Int(actual_case_value(*expr) as i32),
+        Type::UInt => Const::UInt(actual_case_value(*expr) as u32),
+        Type::Long => Const::Long(actual_case_value(*expr) as i64),
+        Type::ULong => Const::ULong(actual_case_value(*expr)),
+        Type::Double => unreachable!("double in case expression"),
         Type::Fun(_, _) => unreachable!("function type in case expression"),
     }
 }
 
 // Convert a constant initializer to its declared type
 fn cast_init(const_init: Const, ty: &Type) -> StaticInit {
-    match ty {
-        Type::Int => StaticInit::Int(actual_value(const_init) as i32),
-        Type::UInt => StaticInit::UInt(actual_value(const_init) as u32),
-        Type::Long => StaticInit::Long(actual_value(const_init)),
-        Type::ULong => StaticInit::ULong(actual_value(const_init) as u64),
-        Type::Double => StaticInit::Double(actual_value(const_init) as f64),
-        Type::Fun(_, _) => unreachable!("function type in constant initializer"),
+    match (const_init, ty) {
+        (c, Type::Int) if is_integral(c) => StaticInit::Int(u64_value(c) as i32),
+        (c, Type::UInt) if is_integral(c) => StaticInit::UInt(u64_value(c) as u32),
+        (c, Type::Long) if is_integral(c) => StaticInit::Long(u64_value(c) as i64),
+        (c, Type::ULong) if is_integral(c) => StaticInit::ULong(u64_value(c)),
+        (Const::Int(n), Type::Double) => StaticInit::Double(n as f64),
+        (Const::UInt(n), Type::Double) => StaticInit::Double(n as f64),
+        (Const::Long(n), Type::Double) => StaticInit::Double(n as f64),
+        (Const::ULong(n), Type::Double) => StaticInit::Double(n as f64),
+        (Const::Double(n), Type::Double) => StaticInit::Double(n),
+        (Const::Double(n), Type::Int) => StaticInit::Int(n as i32),
+        (Const::Double(n), Type::UInt) => StaticInit::UInt(n as u32),
+        (Const::Double(n), Type::Long) => StaticInit::Long(n as i64),
+        (Const::Double(n), Type::ULong) => StaticInit::ULong(n as u64),
+        (_, Type::Fun(_, _)) => unreachable!("function type in constant initializer"),
+        x => {
+            eprintln!("{x:?}");
+            todo!()
+        }
     }
+}
+
+fn u64_value(const_init: Const) -> u64 {
+    match const_init {
+        Const::Int(n) => n as u64,
+        Const::Long(n) => n as u64,
+        Const::UInt(n) => n as u64,
+        Const::ULong(n) => n,
+        Const::Double(n) => n.to_bits(),
+    }
+}
+
+fn is_integral(const_init: Const) -> bool {
+    !matches!(const_init, Const::Double(_))
 }

@@ -87,13 +87,14 @@ fn compile_file(
         println!("{:?}", tackified);
         std::process::exit(0);
     }
-    let assembled = codegen::assemble(tackified, &symbols);
+    let (assembled, backend_symbols) = codegen::assemble(tackified, &symbols, &mut interner);
     if rest_args.iter().any(|s| s == "--codegen") {
         println!("{:?}", assembled);
         std::process::exit(0);
     }
     let result = emit::emit(
         assembled,
+        &backend_symbols,
         &interner,
         fs::File::create(assembly_path).expect("Error opening .s file"),
     );

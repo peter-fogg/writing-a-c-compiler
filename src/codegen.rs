@@ -1,11 +1,11 @@
 use std::collections::HashMap;
 
 use crate::ast::{Const, Type};
-use crate::interner::Symbol;
+use crate::interner::{Interner, Symbol};
 use crate::tacky::{self, Tacky, TopLevel, Val};
 use crate::typecheck::{Attrs, StaticInit};
 
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Clone, Copy)]
 pub enum Operand {
     Imm(i64),
     Reg(Register),
@@ -18,6 +18,7 @@ pub enum Operand {
 pub enum UnaryOp {
     Neg,
     Not,
+    Shr, // TODO consider renaming binary operator versions for consistency
 }
 
 #[derive(Debug, PartialEq, Clone, Copy)]
@@ -25,6 +26,7 @@ pub enum BinaryOp {
     Add,
     Sub,
     Mult,
+    DivDouble,
     BitAnd,
     BitOr,
     BitXOr,
@@ -45,6 +47,16 @@ pub enum Register {
     R9,
     R10,
     R11,
+    XMM0,
+    XMM1,
+    XMM2,
+    XMM3,
+    XMM4,
+    XMM5,
+    XMM6,
+    XMM7,
+    XMM14,
+    XMM15,
 }
 
 #[derive(Debug, PartialEq, Clone, Copy)]
@@ -59,12 +71,15 @@ pub enum CondCode {
     AE,
     B,
     BE,
+    P,
+    NP,
 }
 
 #[derive(Debug, PartialEq, Clone, Copy)]
 pub enum AsmType {
     Longword,
     Quadword,
+    Double,
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -80,6 +95,16 @@ pub enum Instr {
         dst: Operand,
     },
     MovZeroExtend {
+        src: Operand,
+        dst: Operand,
+    },
+    Cvttsd2si {
+        ty: AsmType,
+        src: Operand,
+        dst: Operand,
+    },
+    Cvtsi2sd {
+        ty: AsmType,
         src: Operand,
         dst: Operand,
     },
@@ -111,14 +136,20 @@ pub enum Instr {
 }
 #[derive(Debug, PartialEq, Clone)]
 pub enum AsmTopLevel {
-    AsmFunction {
+    Function {
         name: Symbol,
         instructions: Vec<Instr>,
         global: bool,
+        stack_size: u16,
     },
-    AsmStatic {
+    StaticVar {
         name: Symbol,
         global: bool,
+        init: StaticInit,
+        alignment: u8,
+    },
+    StaticConst {
+        name: Symbol,
         init: StaticInit,
         alignment: u8,
     },
@@ -132,32 +163,86 @@ struct ReplaceState<'a> {
     symbols: &'a HashMap<Symbol, AsmEntry>,
 }
 
-pub fn assemble(top_levels: Tacky, symbols: &HashMap<Symbol, (Type, Attrs)>) -> Assembly {
+struct AssembleState<'a> {
+    interner: &'a mut Interner,
+    count: u8,
+    constants: HashMap<(u64, u8), AsmTopLevel>,
+}
+
+pub fn assemble<'a>(
+    top_levels: Tacky,
+    symbols: &HashMap<Symbol, (Type, Attrs)>,
+    interner: &'a mut Interner,
+) -> (Assembly, HashMap<Symbol, AsmEntry>) {
     let mut asm_top_levels = Vec::with_capacity(top_levels.len());
+    let mut state = AssembleState {
+        count: 0,
+        constants: HashMap::new(),
+        interner,
+    };
+    // Assemble the TACKY instructions
     for top_level in top_levels {
-        asm_top_levels.push(assemble_top_level(top_level, symbols));
+        asm_top_levels.push(state.assemble_top_level(top_level, &symbols));
     }
-    asm_top_levels
+    let mut backend_symbols = convert_symbols(symbols);
+    for top_level in &mut asm_top_levels {
+        match top_level {
+            AsmTopLevel::Function {
+                instructions,
+                stack_size,
+                ..
+            } => {
+                let new_stack_size = replace_pseudo(instructions, &backend_symbols);
+
+                let fixed = fixup_instructions(instructions.to_vec());
+
+                let rounded = match new_stack_size % 16 {
+                    0 => new_stack_size,
+                    n => new_stack_size + (16 - n),
+                };
+
+                *stack_size = rounded;
+                *instructions = fixed;
+            }
+            _ => (),
+        }
+    }
+    // Add floating-point constants to both the symbol table and the
+    // top levels so that we can use local labels for them
+    for (_, constant) in state.constants.drain() {
+        match constant {
+            AsmTopLevel::StaticConst { name, .. } => {
+                backend_symbols.insert(
+                    name,
+                    AsmEntry::Obj {
+                        ty: AsmType::Double,
+                        is_static: true,
+                        is_constant: true,
+                    },
+                );
+            }
+            _ => (),
+        }
+        asm_top_levels.push(constant)
+    }
+
+    (asm_top_levels, backend_symbols)
 }
 
 fn alignment(ty: &Type) -> u8 {
     match ty {
         Type::Int | Type::UInt => 4,
-        Type::Long | Type::ULong => 8,
+        Type::Long | Type::ULong | Type::Double => 8,
         Type::Fun(_, _) => unreachable!("alignment of function type"),
-        Type::Double => todo!(),
     }
 }
 
 fn val_asm_type(val: &Val, symbols: &HashMap<Symbol, (Type, Attrs)>) -> AsmType {
-    match val {
-        Val::Constant(Const::Int(_) | Const::UInt(_)) => AsmType::Longword,
-        Val::Constant(Const::Long(_) | Const::ULong(_)) => AsmType::Quadword,
-        Val::Constant(Const::Double(_)) => todo!(),
-        Val::Var(name) => match symbols.get(name) {
-            None => unreachable!("unresolved symbol {}", name),
-            Some((ty, _)) => ty_asm_type(ty),
-        },
+    match val_tacky_type(val, symbols) {
+        Type::Int | Type::UInt => AsmType::Longword,
+        Type::Long | Type::ULong => AsmType::Quadword,
+        Type::Double => AsmType::Double,
+        Type::Fun(_, _) => unreachable!("function used as a variable post-typechecking"),
     }
 }
 
@@ -168,456 +253,923 @@ fn ty_asm_type(ty: &Type) -> AsmType {
         Type::Fun(_, _) => {
             unreachable!("function used as variable post-typechecking")
         }
-        Type::Double => todo!(),
+        Type::Double => AsmType::Double,
+    }
+}
+
+fn val_tacky_type(val: &Val, symbols: &HashMap<Symbol, (Type, Attrs)>) -> Type {
+    match val {
+        Val::Constant(c) => const_type(c),
+        Val::Var(name) => match symbols.get(name) {
+            None => unreachable!("unresolved symbol {name}"),
+            Some((ty, _)) => ty.clone(),
+        },
+    }
+}
+
+fn const_type(constant: &Const) -> Type {
+    match constant {
+        Const::Double(_) => Type::Double,
+        Const::Int(_) => Type::Int,
+        Const::Long(_) => Type::Long,
+        Const::UInt(_) => Type::UInt,
+        Const::ULong(_) => Type::ULong,
     }
 }
 
 fn is_unsigned_type(val: &Val, symbols: &HashMap<Symbol, (Type, Attrs)>) -> bool {
-    match val {
-        Val::Constant(c) => matches!(c, Const::UInt(_) | Const::ULong(_)),
-        Val::Var(name) => match symbols.get(name) {
-            None => unreachable!("unresolved symbol {name}"),
-            Some((ty, _)) => matches!(ty, Type::UInt | Type::ULong),
-        },
-    }
+    matches!(val_tacky_type(val, symbols), Type::UInt | Type::ULong)
 }
 
-fn assemble_top_level(
-    top_level: TopLevel,
-    symbols: &HashMap<Symbol, (Type, Attrs)>,
-) -> AsmTopLevel {
-    match top_level {
-        TopLevel::TackyFunction {
-            name,
-            instructions,
-            params,
-            global,
-        } => {
-            let mut assembly = vec![];
-            let mut stack_offset = 16;
-            for (stack_param, ty) in params.iter().skip(6) {
-                assembly.push(Instr::Mov {
-                    ty: ty_asm_type(ty),
-                    src: Operand::Stack(stack_offset),
-                    dst: Operand::Pseudo(*stack_param),
-                });
-                stack_offset += 8;
-            }
-
-            let reg_arg_locations = [
-                Operand::Reg(Register::DI),
-                Operand::Reg(Register::SI),
-                Operand::Reg(Register::DX),
-                Operand::Reg(Register::CX),
-                Operand::Reg(Register::R8),
-                Operand::Reg(Register::R9),
-            ]
-            .into_iter();
-
-            for ((param, ty), src) in params.iter().zip(reg_arg_locations) {
-                let dst = Operand::Pseudo(*param);
-                assembly.push(Instr::Mov {
-                    ty: ty_asm_type(ty),
-                    src: src.clone(),
-                    dst,
-                });
-            }
-
-            let body = assemble_instructions(instructions, symbols);
-
-            assembly.extend(body);
-
-            let symbols = convert_symbols(symbols);
-
-            let stack_size = replace_pseudo(&mut assembly, &symbols);
-
-            let rounded = match stack_size % 16 {
-                0 => stack_size,
-                n => stack_size + (16 - n),
-            };
-
-            // Allocate space on the stack for instructions
-            // TODO: inserting at the front of the vec is inefficient and can be optimized
-            assembly.insert(
-                0,
-                Instr::Binary {
-                    ty: AsmType::Quadword,
-                    binop: BinaryOp::Sub,
-                    src: Operand::Imm(rounded.into()),
-                    dst: Operand::Reg(Register::SP),
-                },
-            );
-
-            let fixed = fixup_instructions(assembly);
-
-            AsmTopLevel::AsmFunction {
+impl<'a> AssembleState<'a> {
+    fn assemble_top_level(
+        &mut self,
+        top_level: TopLevel,
+        symbols: &HashMap<Symbol, (Type, Attrs)>,
+    ) -> AsmTopLevel {
+        match top_level {
+            TopLevel::TackyFunction {
                 name,
-                instructions: fixed,
+                instructions,
+                params,
                 global,
-            }
-        }
-        TopLevel::StaticVar {
-            name,
-            global,
-            init,
-            ty,
-        } => AsmTopLevel::AsmStatic {
-            name,
-            global,
-            init,
-            alignment: alignment(&ty),
-        },
-    }
-}
-
-fn assemble_instructions(
-    instructions: Vec<tacky::Instr>,
-    symbols: &HashMap<Symbol, (Type, Attrs)>,
-) -> Vec<Instr> {
-    let mut assembly = Vec::new();
-    for instr in instructions {
-        match instr {
-            tacky::Instr::Return(val) => {
-                assembly.push(Instr::Mov {
-                    ty: val_asm_type(&val, symbols),
-                    src: assemble_val(val),
-                    dst: Operand::Reg(Register::AX),
-                });
-                assembly.push(Instr::Ret);
-            }
-            tacky::Instr::Jump { target } => assembly.push(Instr::Jmp(target)),
-            tacky::Instr::Copy { src, dst } => assembly.push(Instr::Mov {
-                ty: val_asm_type(&src, symbols),
-                src: assemble_val(src),
-                dst: assemble_val(dst),
-            }),
-            tacky::Instr::Label(id) => assembly.push(Instr::Label(id)),
-            tacky::Instr::Unary {
-                unop: tacky::UnaryOp::Not,
-                src,
-                dst,
-            } => assembly.extend(vec![
-                Instr::Cmp {
-                    ty: val_asm_type(&src, symbols),
-                    lhs: Operand::Imm(0),
-                    rhs: assemble_val(src),
-                },
-                Instr::Mov {
-                    ty: val_asm_type(&src, symbols),
-                    src: Operand::Imm(0),
-                    dst: assemble_val(dst),
-                },
-                Instr::SetCC(CondCode::E, assemble_val(dst)),
-            ]),
-            tacky::Instr::Unary { unop, src, dst } => {
-                let dst_ty = val_asm_type(&dst, symbols);
-                let dst = assemble_val(dst);
-                assembly.push(Instr::Mov {
-                    ty: val_asm_type(&src, symbols),
-                    src: assemble_val(src),
-                    dst: dst.clone(),
-                });
-                assembly.push(Instr::Unary {
-                    ty: dst_ty,
-                    unop: assemble_unop(unop),
-                    dst,
-                });
-            }
-            tacky::Instr::Binary {
-                binop: binop @ (tacky::BinaryOp::Divide | tacky::BinaryOp::Remainder),
-                src1,
-                src2,
-                dst,
-            } if is_unsigned_type(&src1, symbols) => {
-                let ty = val_asm_type(&src1, symbols);
-                let dst = assemble_val(dst);
-                let src1 = assemble_val(src1);
-                let src2 = assemble_val(src2);
-                let out_reg = if binop == tacky::BinaryOp::Divide {
-                    Register::AX
-                } else {
-                    Register::DX
-                };
-                assembly.extend(vec![
-                    Instr::Mov {
-                        ty,
-                        src: src1,
-                        dst: Operand::Reg(Register::AX),
-                    },
-                    Instr::Mov {
-                        ty,
-                        src: Operand::Imm(0),
-                        dst: Operand::Reg(Register::DX),
-                    },
-                    Instr::Div(ty, src2),
-                    Instr::Mov {
-                        ty,
-                        src: Operand::Reg(out_reg),
-                        dst,
-                    },
-                ])
-            }
-            tacky::Instr::Binary {
-                binop: binop @ (tacky::BinaryOp::Divide | tacky::BinaryOp::Remainder),
-                src1,
-                src2,
-                dst,
             } => {
-                let ty = val_asm_type(&src1, symbols);
-                let dst = assemble_val(dst);
-                let src1 = assemble_val(src1);
-                let src2 = assemble_val(src2);
-                let out_reg = if binop == tacky::BinaryOp::Divide {
-                    Register::AX
-                } else {
-                    Register::DX
-                };
-                assembly.extend(vec![
-                    Instr::Mov {
-                        ty,
-                        src: src1,
-                        dst: Operand::Reg(Register::AX),
-                    },
-                    Instr::Cdq(ty),
-                    Instr::IDiv(ty, src2),
-                    Instr::Mov {
-                        ty,
-                        src: Operand::Reg(out_reg),
-                        dst,
-                    },
-                ]);
-            }
-            tacky::Instr::Binary {
-                binop: binop @ (tacky::BinaryOp::ShiftLeft | tacky::BinaryOp::ShiftRight),
-                src1,
-                src2,
-                dst,
-            } => {
-                let binop = match binop {
-                    tacky::BinaryOp::ShiftLeft => BinaryOp::ShiftLeft,
-                    tacky::BinaryOp::ShiftRight => {
-                        if is_unsigned_type(&src1, symbols) {
-                            BinaryOp::ShiftRightLogical
-                        } else {
-                            BinaryOp::ShiftRight
-                        }
-                    }
-                    _ => panic!("unreachable"),
-                };
-                let dst = assemble_val(dst);
-                let ty = val_asm_type(&src1, symbols);
-                assembly.extend(vec![
-                    Instr::Mov {
-                        ty,
-                        src: assemble_val(src2),
-                        dst: Operand::Reg(Register::CX),
-                    },
-                    Instr::Mov {
-                        ty,
-                        src: assemble_val(src1),
-                        dst: dst.clone(),
-                    },
-                    Instr::Binary {
-                        ty,
-                        binop,
-                        src: Operand::Reg(Register::CX),
-                        dst,
-                    },
-                ])
-            }
-            tacky::Instr::Binary {
-                binop,
-                src1,
-                src2,
-                dst,
-            } if is_comparison(binop) => {
-                let unsigned = is_unsigned_type(&src1, symbols);
-                let code = match binop {
-                    tacky::BinaryOp::Equals => CondCode::E,
-                    tacky::BinaryOp::NotEquals => CondCode::NE,
-                    tacky::BinaryOp::GreaterThan => {
-                        if unsigned {
-                            CondCode::A
-                        } else {
-                            CondCode::G
-                        }
-                    }
-                    tacky::BinaryOp::GreaterThanEquals => {
-                        if unsigned {
-                            CondCode::AE
-                        } else {
-                            CondCode::GE
-                        }
-                    }
-                    tacky::BinaryOp::LessThan => {
-                        if unsigned {
-                            CondCode::B
-                        } else {
-                            CondCode::L
-                        }
-                    }
-                    tacky::BinaryOp::LessThanEquals => {
-                        if unsigned {
-                            CondCode::BE
-                        } else {
-                            CondCode::LE
-                        }
-                    }
-                    _ => unreachable!(),
-                };
-                assembly.extend(vec![
-                    Instr::Cmp {
-                        ty: val_asm_type(&src1, symbols),
-                        lhs: assemble_val(src2),
-                        rhs: assemble_val(src1),
-                    },
-                    Instr::Mov {
-                        ty: val_asm_type(&dst, symbols),
-                        src: Operand::Imm(0),
-                        dst: assemble_val(dst),
-                    },
-                    Instr::SetCC(code, assemble_val(dst)),
-                ]);
-            }
-            tacky::Instr::Binary {
-                binop,
-                src1,
-                src2,
-                dst,
-            } => {
-                let binop = match binop {
-                    tacky::BinaryOp::Add => BinaryOp::Add,
-                    tacky::BinaryOp::Subtract => BinaryOp::Sub,
-                    tacky::BinaryOp::Multiply => BinaryOp::Mult,
-                    tacky::BinaryOp::BitAnd => BinaryOp::BitAnd,
-                    tacky::BinaryOp::BitOr => BinaryOp::BitOr,
-                    tacky::BinaryOp::BitXOr => BinaryOp::BitXOr,
-                    _ => panic!(
-                        "Expected add, subtract, multiply, or bitwise op, got {:?}",
-                        binop
-                    ),
-                };
-                let dst = assemble_val(dst);
-                assembly.extend(vec![
-                    Instr::Mov {
-                        ty: val_asm_type(&src1, symbols),
-                        src: assemble_val(src1),
-                        dst: dst.clone(),
-                    },
-                    Instr::Binary {
-                        ty: val_asm_type(&src1, symbols),
-                        binop,
-                        src: assemble_val(src2),
-                        dst,
-                    },
-                ]);
-            }
-            tacky::Instr::JumpIfZero { condition, target } => assembly.extend(vec![
-                Instr::Cmp {
-                    ty: val_asm_type(&condition, symbols),
-                    lhs: Operand::Imm(0),
-                    rhs: assemble_val(condition),
-                },
-                Instr::JmpCC(CondCode::E, target),
-            ]),
-            tacky::Instr::JumpIfNotZero { condition, target } => assembly.extend(vec![
-                Instr::Cmp {
-                    ty: val_asm_type(&condition, symbols),
-                    lhs: Operand::Imm(0),
-                    rhs: assemble_val(condition),
-                },
-                Instr::JmpCC(CondCode::NE, target),
-            ]),
-            tacky::Instr::Call { name, params, dst } => {
-                let arg_registers = [
-                    Register::DI,
-                    Register::SI,
-                    Register::DX,
-                    Register::CX,
-                    Register::R8,
-                    Register::R9,
-                ];
+                let mut assembly = vec![];
 
-                let (first_six, rest) =
-                    if let Some((first_six, rest)) = params.split_first_chunk::<6>() {
-                        (first_six.as_slice(), rest)
-                    } else {
-                        (params.as_slice(), [].as_slice())
-                    };
+                let params = params.iter().map(|p| Val::Var(*p)).collect();
 
-                let stack_padding = if rest.len() % 2 == 0 { 0 } else { 8 };
-                if stack_padding != 0 {
-                    assembly.push(Instr::Binary {
-                        ty: AsmType::Quadword,
-                        binop: BinaryOp::Sub,
-                        src: Operand::Imm(stack_padding),
-                        dst: Operand::Reg(Register::SP),
+                let (int_reg_params, double_reg_params, stack_params) =
+                    self.classify_params(params, symbols);
+
+                let int_arg_registers = [
+                    Operand::Reg(Register::DI),
+                    Operand::Reg(Register::SI),
+                    Operand::Reg(Register::DX),
+                    Operand::Reg(Register::CX),
+                    Operand::Reg(Register::R8),
+                    Operand::Reg(Register::R9),
+                ]
+                .into_iter();
+
+                let double_arg_registers = [
+                    Operand::Reg(Register::XMM0),
+                    Operand::Reg(Register::XMM1),
+                    Operand::Reg(Register::XMM2),
+                    Operand::Reg(Register::XMM3),
+                    Operand::Reg(Register::XMM4),
+                    Operand::Reg(Register::XMM5),
+                    Operand::Reg(Register::XMM6),
+                    Operand::Reg(Register::XMM7),
+                ]
+                .into_iter();
+
+                for ((ty, dst), src) in int_reg_params.iter().zip(int_arg_registers) {
+                    assembly.push(Instr::Mov {
+                        ty: *ty,
+                        src,
+                        dst: *dst,
                     });
                 }
 
-                for (reg_index, tacky_param) in first_six.iter().enumerate() {
-                    let reg = arg_registers[reg_index];
-                    let asm_param = assemble_val(*tacky_param);
+                for ((ty, dst), src) in double_reg_params.iter().zip(double_arg_registers) {
                     assembly.push(Instr::Mov {
-                        ty: val_asm_type(tacky_param, symbols),
-                        src: asm_param,
-                        dst: Operand::Reg(reg),
-                    })
+                        ty: *ty,
+                        src,
+                        dst: *dst,
+                    });
                 }
 
-                for tacky_param in rest.iter().rev() {
-                    let asm_param = assemble_val(*tacky_param);
-                    if matches!(asm_param, Operand::Imm(_) | Operand::Reg(_))
-                        || val_asm_type(tacky_param, symbols) == AsmType::Quadword
-                    {
-                        assembly.push(Instr::Push(asm_param));
+                let mut stack_offset = 16;
+                for (ty, dst) in stack_params {
+                    assembly.push(Instr::Mov {
+                        ty,
+                        src: Operand::Stack(stack_offset),
+                        dst,
+                    });
+                    stack_offset += 8;
+                }
+
+                let body = self.assemble_instructions(instructions, symbols);
+
+                assembly.extend(body);
+
+                AsmTopLevel::Function {
+                    name,
+                    instructions: assembly,
+                    global,
+                    stack_size: 0, // will get updated later after pseudoregister replacement
+                }
+            }
+            TopLevel::StaticVar {
+                name,
+                global,
+                init,
+                ty,
+            } => AsmTopLevel::StaticVar {
+                name,
+                global,
+                init,
+                alignment: alignment(&ty),
+            },
+        }
+    }
+
+    fn assemble_instructions(
+        &mut self,
+        instructions: Vec<tacky::Instr>,
+        symbols: &HashMap<Symbol, (Type, Attrs)>,
+    ) -> Vec<Instr> {
+        let mut assembly = Vec::new();
+        for instr in instructions {
+            match instr {
+                tacky::Instr::Return(val) => {
+                    let ty = val_asm_type(&val, symbols);
+                    let reg = if ty == AsmType::Double {
+                        Register::XMM0
                     } else {
+                        Register::AX
+                    };
+                    assembly.push(Instr::Mov {
+                        ty,
+                        src: self.assemble_val(val),
+                        dst: Operand::Reg(reg),
+                    });
+                    assembly.push(Instr::Ret);
+                }
+                tacky::Instr::Jump { target } => assembly.push(Instr::Jmp(target)),
+                tacky::Instr::Copy { src, dst } => assembly.push(Instr::Mov {
+                    ty: val_asm_type(&src, symbols),
+                    src: self.assemble_val(src),
+                    dst: self.assemble_val(dst),
+                }),
+                tacky::Instr::Label(id) => assembly.push(Instr::Label(id)),
+                tacky::Instr::Unary {
+                    unop: tacky::UnaryOp::Not,
+                    src,
+                    dst,
+                } if val_asm_type(&src, symbols) == AsmType::Double => {
+                    let ty = AsmType::Double;
+                    assembly.extend(vec![
+                        // zero out XMM0
+                        Instr::Binary {
+                            binop: BinaryOp::BitXOr,
+                            ty,
+                            src: Operand::Reg(Register::XMM0),
+                            dst: Operand::Reg(Register::XMM0),
+                        },
+                        // compare src to 0
+                        Instr::Cmp {
+                            ty,
+                            lhs: self.assemble_val(src),
+                            rhs: Operand::Reg(Register::XMM0),
+                        },
+                        // zero out destination, eax, and ecx
+                        Instr::Mov {
+                            ty: AsmType::Longword,
+                            src: Operand::Imm(0),
+                            dst: self.assemble_val(dst),
+                        },
+                        Instr::Mov {
+                            ty: AsmType::Longword,
+                            src: Operand::Imm(0),
+                            dst: Operand::Reg(Register::AX),
+                        },
+                        Instr::Mov {
+                            ty: AsmType::Longword,
+                            src: Operand::Imm(0),
+                            dst: Operand::Reg(Register::CX),
+                        },
+                        Instr::SetCC(CondCode::E, Operand::Reg(Register::AX)),
+                        Instr::SetCC(CondCode::NP, Operand::Reg(Register::CX)),
+                        // we need the src to equal 0
+                        // AND the parity flag to not be set
+                        Instr::Binary {
+                            ty: AsmType::Longword,
+                            binop: BinaryOp::BitAnd,
+                            src: Operand::Reg(Register::AX),
+                            dst: Operand::Reg(Register::CX),
+                        },
+                        Instr::Mov {
+                            ty: AsmType::Longword,
+                            src: Operand::Reg(Register::CX),
+                            dst: self.assemble_val(dst),
+                        },
+                        // set dst to result of comparison
+                        //Instr::SetCC(CondCode::E, self.assemble_val(dst)),
+                    ])
+                }
+                tacky::Instr::Unary {
+                    unop: tacky::UnaryOp::Not,
+                    src,
+                    dst,
+                } => assembly.extend(vec![
+                    Instr::Cmp {
+                        ty: val_asm_type(&src, symbols),
+                        lhs: Operand::Imm(0),
+                        rhs: self.assemble_val(src),
+                    },
+                    Instr::Mov {
+                        ty: val_asm_type(&src, symbols),
+                        src: Operand::Imm(0),
+                        dst: self.assemble_val(dst),
+                    },
+                    Instr::SetCC(CondCode::E, self.assemble_val(dst)),
+                ]),
+                tacky::Instr::Unary {
+                    // Negate doubles by xoring with -0.0
+                    unop: tacky::UnaryOp::Negate,
+                    src,
+                    dst,
+                } if val_asm_type(&src, symbols) == AsmType::Double => {
+                    let label = self.add_static_constant(-0.0f64, 16);
+                    let src = self.assemble_val(src);
+                    let dst = self.assemble_val(dst);
+                    let ty = AsmType::Double;
+                    assembly.extend(vec![
+                        Instr::Mov { ty, src, dst },
+                        Instr::Binary {
+                            binop: BinaryOp::BitXOr,
+                            ty,
+                            src: Operand::Data(label),
+                            dst,
+                        },
+                    ]);
+                }
+                tacky::Instr::Unary { unop, src, dst } => {
+                    let dst_ty = val_asm_type(&dst, symbols);
+                    let dst = self.assemble_val(dst);
+                    assembly.push(Instr::Mov {
+                        ty: val_asm_type(&src, symbols),
+                        src: self.assemble_val(src),
+                        dst,
+                    });
+                    assembly.push(Instr::Unary {
+                        ty: dst_ty,
+                        unop: assemble_unop(unop),
+                        dst,
+                    });
+                }
+                tacky::Instr::Binary {
+                    binop: binop @ (tacky::BinaryOp::Divide | tacky::BinaryOp::Remainder),
+                    src1,
+                    src2,
+                    dst,
+                } if is_unsigned_type(&src1, symbols) => {
+                    let ty = val_asm_type(&src1, symbols);
+                    let dst = self.assemble_val(dst);
+                    let src1 = self.assemble_val(src1);
+                    let src2 = self.assemble_val(src2);
+                    let out_reg = if binop == tacky::BinaryOp::Divide {
+                        Register::AX
+                    } else {
+                        Register::DX
+                    };
+                    assembly.extend(vec![
+                        Instr::Mov {
+                            ty,
+                            src: src1,
+                            dst: Operand::Reg(Register::AX),
+                        },
+                        Instr::Mov {
+                            ty,
+                            src: Operand::Imm(0),
+                            dst: Operand::Reg(Register::DX),
+                        },
+                        Instr::Div(ty, src2),
+                        Instr::Mov {
+                            ty,
+                            src: Operand::Reg(out_reg),
+                            dst,
+                        },
+                    ])
+                }
+                tacky::Instr::Binary {
+                    // Double division uses div instruction
+                    binop: tacky::BinaryOp::Divide,
+                    src1,
+                    src2,
+                    dst,
+                } if val_asm_type(&src1, symbols) == AsmType::Double => {
+                    let dst = self.assemble_val(dst);
+                    let src1 = self.assemble_val(src1);
+                    let src2 = self.assemble_val(src2);
+                    let ty = AsmType::Double;
+                    assembly.extend(vec![
+                        Instr::Mov { ty, src: src1, dst },
+                        Instr::Binary {
+                            ty,
+                            binop: BinaryOp::DivDouble,
+                            src: src2,
+                            dst,
+                        },
+                    ]);
+                }
+                tacky::Instr::Binary {
+                    binop: binop @ (tacky::BinaryOp::Divide | tacky::BinaryOp::Remainder),
+                    src1,
+                    src2,
+                    dst,
+                } => {
+                    let ty = val_asm_type(&src1, symbols);
+                    let dst = self.assemble_val(dst);
+                    let src1 = self.assemble_val(src1);
+                    let src2 = self.assemble_val(src2);
+                    let out_reg = if binop == tacky::BinaryOp::Divide {
+                        Register::AX
+                    } else {
+                        Register::DX
+                    };
+                    assembly.extend(vec![
+                        Instr::Mov {
+                            ty,
+                            src: src1,
+                            dst: Operand::Reg(Register::AX),
+                        },
+                        Instr::Cdq(ty),
+                        Instr::IDiv(ty, src2),
+                        Instr::Mov {
+                            ty,
+                            src: Operand::Reg(out_reg),
+                            dst,
+                        },
+                    ]);
+                }
+                tacky::Instr::Binary {
+                    binop: binop @ (tacky::BinaryOp::ShiftLeft | tacky::BinaryOp::ShiftRight),
+                    src1,
+                    src2,
+                    dst,
+                } => {
+                    let binop = match binop {
+                        tacky::BinaryOp::ShiftLeft => BinaryOp::ShiftLeft,
+                        tacky::BinaryOp::ShiftRight => {
+                            if is_unsigned_type(&src1, symbols) {
+                                BinaryOp::ShiftRightLogical
+                            } else {
+                                BinaryOp::ShiftRight
+                            }
+                        }
+                        _ => panic!("unreachable"),
+                    };
+                    let dst = self.assemble_val(dst);
+                    let ty = val_asm_type(&src1, symbols);
+                    assembly.extend(vec![
+                        Instr::Mov {
+                            ty,
+                            src: self.assemble_val(src2),
+                            dst: Operand::Reg(Register::CX),
+                        },
+                        Instr::Mov {
+                            ty,
+                            src: self.assemble_val(src1),
+                            dst,
+                        },
+                        Instr::Binary {
+                            ty,
+                            binop,
+                            src: Operand::Reg(Register::CX),
+                            dst,
+                        },
+                    ])
+                }
+                tacky::Instr::Binary {
+                    binop,
+                    src1,
+                    src2,
+                    dst,
+                } if is_comparison(binop) => {
+                    let is_double = val_tacky_type(&src1, symbols) == Type::Double;
+                    let unsigned_or_double = is_unsigned_type(&src1, symbols) || is_double;
+                    let code = match binop {
+                        tacky::BinaryOp::Equals => CondCode::E,
+                        tacky::BinaryOp::NotEquals => CondCode::NE,
+                        tacky::BinaryOp::GreaterThan => {
+                            if unsigned_or_double {
+                                CondCode::A
+                            } else {
+                                CondCode::G
+                            }
+                        }
+                        tacky::BinaryOp::GreaterThanEquals => {
+                            if unsigned_or_double {
+                                CondCode::AE
+                            } else {
+                                CondCode::GE
+                            }
+                        }
+                        tacky::BinaryOp::LessThan => {
+                            if unsigned_or_double {
+                                CondCode::B
+                            } else {
+                                CondCode::L
+                            }
+                        }
+                        tacky::BinaryOp::LessThanEquals => {
+                            if unsigned_or_double {
+                                CondCode::BE
+                            } else {
+                                CondCode::LE
+                            }
+                        }
+                        _ => unreachable!(),
+                    };
+                    assembly.extend(vec![
+                        Instr::Cmp {
+                            ty: val_asm_type(&src1, symbols),
+                            lhs: self.assemble_val(src2),
+                            rhs: self.assemble_val(src1),
+                        },
+                        Instr::Mov {
+                            // TODO maybe this should just be longword, or maybe long for doubles? check pg 328
+                            ty: val_asm_type(&dst, symbols),
+                            src: Operand::Imm(0),
+                            dst: self.assemble_val(dst),
+                        },
+                    ]);
+                    if is_double {
+                        let (parity_code, op) = if binop == tacky::BinaryOp::NotEquals {
+                            (CondCode::P, BinaryOp::BitOr)
+                        } else {
+                            (CondCode::NP, BinaryOp::BitAnd)
+                        };
                         assembly.extend(vec![
+                            // zero out eax and ecx
                             Instr::Mov {
                                 ty: AsmType::Longword,
-                                src: asm_param,
+                                src: Operand::Imm(0),
                                 dst: Operand::Reg(Register::AX),
                             },
-                            Instr::Push(Operand::Reg(Register::AX)),
+                            Instr::Mov {
+                                ty: AsmType::Longword,
+                                src: Operand::Imm(0),
+                                dst: Operand::Reg(Register::CX),
+                            },
+                            // set eax and ecx to results of both the
+                            // comparison and the parity flag, which
+                            // is set if the comparison is unordered
+                            Instr::SetCC(code, Operand::Reg(Register::AX)),
+                            Instr::SetCC(parity_code, Operand::Reg(Register::CX)),
+                            // we need the comparison to return true
+                            // AND the parity flag to not be set
+                            Instr::Binary {
+                                ty: AsmType::Longword,
+                                binop: op,
+                                src: Operand::Reg(Register::AX),
+                                dst: Operand::Reg(Register::CX),
+                            },
+                            Instr::Mov {
+                                ty: AsmType::Longword,
+                                src: Operand::Reg(Register::CX),
+                                dst: self.assemble_val(dst),
+                            },
+                        ])
+                    } else {
+                        assembly.push(Instr::SetCC(code, self.assemble_val(dst)));
+                    }
+                }
+                tacky::Instr::Binary {
+                    binop,
+                    src1,
+                    src2,
+                    dst,
+                } => {
+                    let binop = match binop {
+                        tacky::BinaryOp::Add => BinaryOp::Add,
+                        tacky::BinaryOp::Subtract => BinaryOp::Sub,
+                        tacky::BinaryOp::Multiply => BinaryOp::Mult,
+                        tacky::BinaryOp::BitAnd => BinaryOp::BitAnd,
+                        tacky::BinaryOp::BitOr => BinaryOp::BitOr,
+                        tacky::BinaryOp::BitXOr => BinaryOp::BitXOr,
+                        _ => panic!(
+                            "Expected add, subtract, multiply, or bitwise op, got {:?}",
+                            binop
+                        ),
+                    };
+                    let dst = self.assemble_val(dst);
+                    assembly.extend(vec![
+                        Instr::Mov {
+                            ty: val_asm_type(&src1, symbols),
+                            src: self.assemble_val(src1),
+                            dst,
+                        },
+                        Instr::Binary {
+                            ty: val_asm_type(&src1, symbols),
+                            binop,
+                            src: self.assemble_val(src2),
+                            dst,
+                        },
+                    ]);
+                }
+                jump @ (tacky::Instr::JumpIfZero { condition, target }
+                | tacky::Instr::JumpIfNotZero { condition, target }) => {
+                    let jump_if_zero = matches!(jump, tacky::Instr::JumpIfZero { .. });
+                    let code = if jump_if_zero {
+                        CondCode::E
+                    } else {
+                        CondCode::NE
+                    };
+                    let ty = val_asm_type(&condition, symbols);
+                    let condition = self.assemble_val(condition);
+                    if ty == AsmType::Double {
+                        assembly.extend(vec![
+                            // Doubles use XMM0 for comparison, zero it out
+                            Instr::Binary {
+                                binop: BinaryOp::BitXOr,
+                                ty,
+                                src: Operand::Reg(Register::XMM0),
+                                dst: Operand::Reg(Register::XMM0),
+                            },
+                            Instr::Cmp {
+                                ty,
+                                lhs: condition,
+                                rhs: Operand::Reg(Register::XMM0),
+                            },
+                        ]);
+                        if jump_if_zero {
+                            let unordered_label = self.new_label("unordered");
+                            assembly.extend(vec![
+                                // Skip over zero check if it's unordered
+                                Instr::JmpCC(CondCode::P, unordered_label),
+                                // Jump to the target if it's equal to 0
+                                Instr::JmpCC(CondCode::E, target),
+                                Instr::Label(unordered_label),
+                            ]);
+                        } else {
+                            assembly.extend(vec![
+                                // Jump to the target if it's unorder since NaN is nonzero
+                                Instr::JmpCC(CondCode::P, target),
+                                // Jump to the target if nonzero
+                                Instr::JmpCC(CondCode::NE, target),
+                            ])
+                        }
+                    } else {
+                        assembly.extend(vec![
+                            Instr::Cmp {
+                                ty,
+                                lhs: Operand::Imm(0),
+                                rhs: condition,
+                            },
+                            Instr::JmpCC(code, target),
                         ]);
                     }
                 }
+                tacky::Instr::Call { name, params, dst } => {
+                    let int_registers = [
+                        Register::DI,
+                        Register::SI,
+                        Register::DX,
+                        Register::CX,
+                        Register::R8,
+                        Register::R9,
+                    ];
+                    let double_registers = [
+                        Register::XMM0,
+                        Register::XMM1,
+                        Register::XMM2,
+                        Register::XMM3,
+                        Register::XMM4,
+                        Register::XMM5,
+                        Register::XMM6,
+                        Register::XMM7,
+                    ];
 
-                assembly.push(Instr::Call(name));
+                    let (int_args, double_args, stack_args) = self.classify_params(params, symbols);
 
-                let bytes_to_pop = (8 * rest.len()) as i64 + stack_padding;
-                if bytes_to_pop != 0 {
-                    assembly.push(Instr::Binary {
-                        ty: AsmType::Quadword,
-                        binop: BinaryOp::Add,
-                        src: Operand::Imm(bytes_to_pop),
-                        dst: Operand::Reg(Register::SP),
-                    });
+                    let stack_padding = if stack_args.len() % 2 == 0 { 0 } else { 8 };
+                    if stack_padding != 0 {
+                        assembly.push(Instr::Binary {
+                            ty: AsmType::Quadword,
+                            binop: BinaryOp::Sub,
+                            src: Operand::Imm(stack_padding),
+                            dst: Operand::Reg(Register::SP),
+                        });
+                    }
+
+                    for (reg_index, (ty, param)) in int_args.iter().enumerate() {
+                        let reg = int_registers[reg_index];
+                        assembly.push(Instr::Mov {
+                            ty: *ty,
+                            src: *param,
+                            dst: Operand::Reg(reg),
+                        })
+                    }
+
+                    for (reg_index, (ty, param)) in double_args.iter().enumerate() {
+                        let reg = double_registers[reg_index];
+                        assembly.push(Instr::Mov {
+                            ty: *ty,
+                            src: *param,
+                            dst: Operand::Reg(reg),
+                        })
+                    }
+
+                    for (ty, param) in stack_args.iter().rev() {
+                        if matches!(param, Operand::Imm(_) | Operand::Reg(_))
+                            || matches!(ty, AsmType::Quadword | AsmType::Double)
+                        {
+                            assembly.push(Instr::Push(*param));
+                        } else {
+                            assembly.extend(vec![
+                                Instr::Mov {
+                                    ty: *ty,
+                                    src: *param,
+                                    dst: Operand::Reg(Register::AX),
+                                },
+                                Instr::Push(Operand::Reg(Register::AX)),
+                            ]);
+                        }
+                    }
+
+                    assembly.push(Instr::Call(name));
+
+                    let bytes_to_pop = (8 * stack_args.len()) as i64 + stack_padding;
+                    if bytes_to_pop != 0 {
+                        assembly.push(Instr::Binary {
+                            ty: AsmType::Quadword,
+                            binop: BinaryOp::Add,
+                            src: Operand::Imm(bytes_to_pop),
+                            dst: Operand::Reg(Register::SP),
+                        });
+                    }
+                    let dst_ty = val_asm_type(&dst, symbols);
+                    let dst = self.assemble_val(dst);
+                    if dst_ty == AsmType::Double {
+                        assembly.push(Instr::Mov {
+                            ty: AsmType::Double,
+                            src: Operand::Reg(Register::XMM0),
+                            dst,
+                        })
+                    } else {
+                        assembly.push(Instr::Mov {
+                            ty: dst_ty,
+                            src: Operand::Reg(Register::AX),
+                            dst,
+                        })
+                    }
                 }
-                let dst_ty = val_asm_type(&dst, symbols);
-                let dst = assemble_val(dst);
-                assembly.push(Instr::Mov {
-                    ty: dst_ty,
-                    src: Operand::Reg(Register::AX),
-                    dst,
-                })
+                tacky::Instr::SignExtend { src, dst } => assembly.push(Instr::Movsx {
+                    src: self.assemble_val(src),
+                    dst: self.assemble_val(dst),
+                }),
+                tacky::Instr::Truncate { src, dst } => assembly.push(Instr::Mov {
+                    ty: AsmType::Longword,
+                    src: self.assemble_val(src),
+                    dst: self.assemble_val(dst),
+                }),
+                tacky::Instr::ZeroExtend { src, dst } => assembly.push(Instr::MovZeroExtend {
+                    src: self.assemble_val(src),
+                    dst: self.assemble_val(dst),
+                }),
+                tacky::Instr::DoubleToInt { src, dst } => assembly.push(Instr::Cvttsd2si {
+                    ty: val_asm_type(&dst, symbols),
+                    src: self.assemble_val(src),
+                    dst: self.assemble_val(dst),
+                }),
+                tacky::Instr::IntToDouble { src, dst } => assembly.push(Instr::Cvtsi2sd {
+                    ty: val_asm_type(&src, symbols),
+                    src: self.assemble_val(src),
+                    dst: self.assemble_val(dst),
+                }),
+                tacky::Instr::UIntToDouble { src, dst }
+                    if val_tacky_type(&src, symbols) == Type::UInt =>
+                {
+                    // Unsigned int conversion
+                    assembly.extend(vec![
+                        Instr::MovZeroExtend {
+                            src: self.assemble_val(src),
+                            dst: Operand::Reg(Register::AX),
+                        },
+                        Instr::Cvtsi2sd {
+                            ty: AsmType::Quadword,
+                            src: Operand::Reg(Register::AX),
+                            dst: self.assemble_val(dst),
+                        },
+                    ])
+                }
+                tacky::Instr::UIntToDouble { src, dst } => {
+                    // Unsigned long conversion
+                    let src = self.assemble_val(src);
+                    let dst = self.assemble_val(dst);
+                    let out_of_range = self.new_label("out_of_range");
+                    let end = self.new_label("cvt_end");
+                    let r1 = Operand::Reg(Register::AX);
+                    let r2 = Operand::Reg(Register::DX);
+                    assembly.extend(vec![
+                        // Check if integer is > 0
+                        Instr::Cmp {
+                            ty: AsmType::Quadword,
+                            lhs: Operand::Imm(0),
+                            rhs: src,
+                        },
+                        Instr::JmpCC(CondCode::L, out_of_range),
+                        // Do the conversion if so
+                        Instr::Cvtsi2sd {
+                            ty: AsmType::Quadword,
+                            src,
+                            dst,
+                        },
+                        Instr::Jmp(end),
+                        Instr::Label(out_of_range),
+                        // Get the src into a register so it can be shifted to divide by 2
+                        Instr::Mov {
+                            ty: AsmType::Quadword,
+                            src,
+                            dst: r1,
+                        },
+                        Instr::Mov {
+                            ty: AsmType::Quadword,
+                            src: r1,
+                            dst: r2,
+                        },
+                        // Half the src
+                        Instr::Unary {
+                            ty: AsmType::Quadword,
+                            unop: UnaryOp::Shr,
+                            dst: r2,
+                        },
+                        // Round up to odd
+                        Instr::Binary {
+                            ty: AsmType::Quadword,
+                            binop: BinaryOp::BitAnd,
+                            src: Operand::Imm(1),
+                            dst: r1,
+                        },
+                        Instr::Binary {
+                            ty: AsmType::Quadword,
+                            binop: BinaryOp::BitOr,
+                            src: r1,
+                            dst: r2,
+                        },
+                        // Do the conversion
+                        Instr::Cvtsi2sd {
+                            ty: AsmType::Quadword,
+                            src: r2,
+                            dst,
+                        },
+                        // Undo the halving
+                        Instr::Binary {
+                            ty: AsmType::Double,
+                            binop: BinaryOp::Add,
+                            src: dst,
+                            dst,
+                        },
+                        Instr::Label(end),
+                    ]);
+                }
+                tacky::Instr::DoubleToUInt { src, dst }
+                    if val_tacky_type(&src, symbols) == Type::UInt =>
+                {
+                    // Unsigned int conversion
+                    assembly.extend(vec![
+                        Instr::Cvttsd2si {
+                            ty: AsmType::Quadword,
+                            src: self.assemble_val(src),
+                            dst: Operand::Reg(Register::AX),
+                        },
+                        Instr::MovZeroExtend {
+                            src: Operand::Reg(Register::AX),
+                            dst: self.assemble_val(dst),
+                        },
+                    ])
+                }
+                tacky::Instr::DoubleToUInt { src, dst } => {
+                    // Unsigned long conversion
+                    let upper_bound =
+                        Operand::Data(self.add_static_constant(9223372036854775808.0, 8));
+                    let src = self.assemble_val(src);
+                    let dst = self.assemble_val(dst);
+                    let out_of_range = self.new_label("out_of_range");
+                    let end = self.new_label("end");
+                    let x_reg = Operand::Reg(Register::XMM1);
+                    let r_reg = Operand::Reg(Register::DX);
+                    assembly.extend(vec![
+                        Instr::Cmp {
+                            ty: AsmType::Double,
+                            lhs: upper_bound,
+                            rhs: src,
+                        },
+                        Instr::JmpCC(CondCode::AE, out_of_range),
+                        Instr::Cvttsd2si {
+                            ty: AsmType::Quadword,
+                            src,
+                            dst,
+                        },
+                        Instr::Jmp(end),
+                        Instr::Label(out_of_range),
+                        Instr::Mov {
+                            ty: AsmType::Double,
+                            src,
+                            dst: x_reg,
+                        },
+                        Instr::Binary {
+                            ty: AsmType::Double,
+                            binop: BinaryOp::Sub,
+                            src: upper_bound,
+                            dst: x_reg,
+                        },
+                        Instr::Cvttsd2si {
+                            ty: AsmType::Quadword,
+                            src: x_reg,
+                            dst,
+                        },
+                        Instr::Mov {
+                            ty: AsmType::Quadword,
+                            // Out of bounds number can't fit in an i64 of course, but this gets the right bits
+                            src: Operand::Imm(((i64::MAX as u64) + 1) as i64),
+                            dst: r_reg,
+                        },
+                        Instr::Binary {
+                            ty: AsmType::Quadword,
+                            binop: BinaryOp::Add,
+                            src: r_reg,
+                            dst,
+                        },
+                        Instr::Label(end),
+                    ]);
+                }
             }
-            tacky::Instr::SignExtend { src, dst } => assembly.push(Instr::Movsx {
-                src: assemble_val(src),
-                dst: assemble_val(dst),
-            }),
-            tacky::Instr::Truncate { src, dst } => assembly.push(Instr::Mov {
-                ty: AsmType::Longword,
-                src: assemble_val(src),
-                dst: assemble_val(dst),
-            }),
-            tacky::Instr::ZeroExtend { src, dst } => assembly.push(Instr::MovZeroExtend {
-                src: assemble_val(src),
-                dst: assemble_val(dst),
-            }),
+        }
+        assembly
+    }
+
+    fn classify_params(
+        &mut self,
+        values: Vec<Val>,
+        symbols: &HashMap<Symbol, (Type, Attrs)>,
+    ) -> (
+        Vec<(AsmType, Operand)>,
+        Vec<(AsmType, Operand)>,
+        Vec<(AsmType, Operand)>,
+    ) {
+        let mut int_reg_args = Vec::new();
+        let mut double_reg_args = Vec::new();
+        let mut stack_args = Vec::new();
+
+        for v in values {
+            let ty = val_asm_type(&v, symbols);
+            let v = self.assemble_val(v);
+            let typed_operand = (ty, v);
+            if ty == AsmType::Double {
+                if double_reg_args.len() < 8 {
+                    double_reg_args.push(typed_operand);
+                } else {
+                    stack_args.push(typed_operand);
+                }
+            } else {
+                if int_reg_args.len() < 6 {
+                    int_reg_args.push(typed_operand);
+                } else {
+                    stack_args.push(typed_operand);
+                }
+            }
+        }
+
+        (int_reg_args, double_reg_args, stack_args)
+    }
+
+    fn assemble_val(&mut self, val: Val) -> Operand {
+        match val {
+            Val::Constant(Const::Int(n)) => Operand::Imm(n.into()),
+            Val::Constant(Const::Long(n)) => Operand::Imm(n),
+            Val::Constant(Const::UInt(n)) => Operand::Imm(n.into()),
+            Val::Constant(Const::ULong(n)) => Operand::Imm(n as i64),
+            Val::Constant(Const::Double(n)) => {
+                let label = self.add_static_constant(n, 8);
+                Operand::Data(label)
+            }
+            Val::Var(s) => Operand::Pseudo(s),
         }
     }
-    assembly
+
+    fn add_static_constant(&mut self, value: f64, alignment: u8) -> Symbol {
+        // Use bits as key to handle both -0.0 and 0.0 distinctly
+        let bits = value.to_bits();
+
+        if let Some(AsmTopLevel::StaticConst { name, .. }) =
+            // Use the existing constant if we have it
+            self.constants.get(&(bits, alignment))
+        {
+            *name
+        } else {
+            // Generate a new constants
+            let label = self.new_label("double");
+            self.constants.insert(
+                (bits, alignment),
+                AsmTopLevel::StaticConst {
+                    name: label,
+                    alignment,
+                    init: StaticInit::Double(value),
+                },
+            );
+            label
+        }
+    }
+
+    fn new_label(&mut self, name: &'static str) -> Symbol {
+        let count = self.count;
+        self.count += 1;
+        self.interner.intern(format!("{name}.{count}"))
+    }
 }
 
 fn is_comparison(binop: tacky::BinaryOp) -> bool {
@@ -637,17 +1189,6 @@ fn assemble_unop(unop: tacky::UnaryOp) -> UnaryOp {
         tacky::UnaryOp::Complement => UnaryOp::Not,
         tacky::UnaryOp::Negate => UnaryOp::Neg,
         unop => panic!("Can't assemble {:?}", unop),
-    }
-}
-
-fn assemble_val(val: Val) -> Operand {
-    match val {
-        Val::Constant(Const::Int(n)) => Operand::Imm(n.into()),
-        Val::Constant(Const::Long(n)) => Operand::Imm(n),
-        Val::Constant(Const::UInt(n)) => Operand::Imm(n.into()),
-        Val::Constant(Const::ULong(n)) => Operand::Imm(n as i64),
-        Val::Constant(Const::Double(_n)) => todo!(),
-        Val::Var(s) => Operand::Pseudo(s),
     }
 }
 
@@ -779,7 +1320,30 @@ fn replace_pseudo(instrs: &mut [Instr], symbols: &HashMap<Symbol, AsmEntry>) -> 
                 let operand = replace_op(operand, &mut replace_state);
                 *instr = Instr::Push(operand);
             }
-            _ => (),
+            Instr::Cvtsi2sd { .. } => {
+                let cvtsi2sd = std::mem::replace(instr, Instr::Ret);
+                let Instr::Cvtsi2sd { ty, src, dst } = cvtsi2sd else {
+                    unreachable!()
+                };
+                let src = replace_op(src, &mut replace_state);
+                let dst = replace_op(dst, &mut replace_state);
+                *instr = Instr::Cvtsi2sd { ty, src, dst };
+            }
+            Instr::Cvttsd2si { .. } => {
+                let cvtsd2si = std::mem::replace(instr, Instr::Ret);
+                let Instr::Cvttsd2si { ty, src, dst } = cvtsd2si else {
+                    unreachable!()
+                };
+                let src = replace_op(src, &mut replace_state);
+                let dst = replace_op(dst, &mut replace_state);
+                *instr = Instr::Cvttsd2si { ty, src, dst };
+            }
+            Instr::JmpCC(_, _)
+            | Instr::Label(_)
+            | Instr::Jmp(_)
+            | Instr::Call(_)
+            | Instr::Ret
+            | Instr::Cdq(_) => (),
         }
     }
     replace_state.max_offset
@@ -802,14 +1366,14 @@ fn replace_op(op: Operand, state: &mut ReplaceState) -> Operand {
                         Some(AsmEntry::Obj { ty, .. }) => ty,
                         _ => unreachable!("wrong type for var {}", var),
                     };
-                    // Quadwords get 8 bytes of stack space, 4 otherwise
-                    let is_quadword = *ty == AsmType::Quadword;
-                    let stack_size = if is_quadword { 8 } else { 4 };
+                    // Quadwords and doubles get 8 bytes of stack space, 4 otherwise
+                    let eight_bytes = matches!(*ty, AsmType::Quadword | AsmType::Double);
+                    let stack_size = if eight_bytes { 8 } else { 4 };
                     state.max_offset += stack_size;
                     // Ensure proper alignment by adding another 4
                     // bytes if a quadword would not be at an offset
                     // which is a multiple of 8
-                    if is_quadword && !state.max_offset.is_multiple_of(8) {
+                    if eight_bytes && !state.max_offset.is_multiple_of(8) {
                         state.max_offset += 4;
                     }
                     state.max_offset
@@ -830,16 +1394,18 @@ fn fixup_instructions(instrs: Vec<Instr>) -> Vec<Instr> {
     let mut fixed = Vec::new();
     for instr in instrs {
         match instr {
+            // Mov can't have both operands in memory. Select a scratch register based on type
             Instr::Mov { ty, src: s, dst: d } if is_memory(&s) || is_memory(&d) => {
+                let reg = get_scratch_reg(ty);
                 fixed.extend(vec![
                     Instr::Mov {
                         ty,
                         src: s,
-                        dst: Operand::Reg(Register::R10),
+                        dst: reg,
                     },
                     Instr::Mov {
                         ty,
-                        src: Operand::Reg(Register::R10),
+                        src: reg,
                         dst: d,
                     },
                 ]);
@@ -870,6 +1436,57 @@ fn fixup_instructions(instrs: Vec<Instr>) -> Vec<Instr> {
                 src: Operand::Imm((n as i32).into()),
                 dst,
             }),
+            // addsd, subsd, mulsd, divsd, xorpd must have a register
+            // destination. move their destination into XMM15, do the
+            // operation, then move XMM15 into the original destination
+            Instr::Binary {
+                ty: AsmType::Double,
+                binop:
+                    binop @ (BinaryOp::Add
+                    | BinaryOp::Sub
+                    | BinaryOp::Mult
+                    | BinaryOp::BitXOr
+                    | BinaryOp::DivDouble),
+                src,
+                dst,
+            } if matches!(src, Operand::Imm(_)) || is_memory(&dst) => {
+                let new_src = if matches!(src, Operand::Imm(_)) {
+                    fixed.extend(vec![
+                        Instr::Mov {
+                            ty: AsmType::Longword,
+                            src,
+                            dst: Operand::Reg(Register::R10),
+                        },
+                        Instr::Cvtsi2sd {
+                            ty: AsmType::Longword,
+                            src: Operand::Reg(Register::R10),
+                            dst: Operand::Reg(Register::XMM14),
+                        },
+                    ]);
+                    Operand::Reg(Register::XMM14)
+                } else {
+                    src
+                };
+                fixed.extend(vec![
+                    Instr::Mov {
+                        ty: AsmType::Double,
+                        src: dst,
+                        dst: Operand::Reg(Register::XMM15),
+                    },
+                    Instr::Binary {
+                        ty: AsmType::Double,
+                        binop,
+                        src: new_src,
+                        dst: Operand::Reg(Register::XMM15),
+                    },
+                    Instr::Mov {
+                        ty: AsmType::Double,
+                        src: Operand::Reg(Register::XMM15),
+                        dst,
+                    },
+                ])
+            }
+
             Instr::Binary {
                 ty: ty @ AsmType::Quadword,
                 binop: binop @ (BinaryOp::Add | BinaryOp::Sub),
@@ -902,16 +1519,17 @@ fn fixup_instructions(instrs: Vec<Instr>) -> Vec<Instr> {
                 dst: d,
                 ty,
             } if is_memory(&s) || is_memory(&d) => {
+                let reg = get_scratch_reg(ty);
                 fixed.extend(vec![
                     Instr::Mov {
                         ty,
                         src: s,
-                        dst: Operand::Reg(Register::R10),
+                        dst: reg,
                     },
                     Instr::Binary {
                         ty,
                         binop,
-                        src: Operand::Reg(Register::R10),
+                        src: reg,
                         dst: d,
                     },
                 ]);
@@ -925,35 +1543,37 @@ fn fixup_instructions(instrs: Vec<Instr>) -> Vec<Instr> {
                 // mulq cannot have a large constant src -- move this into r10 first
                 let needs_src_rewrite =
                     ty == AsmType::Quadword && matches!(src, Operand::Imm(n) if !in_int_range(n));
-                let mut new_src = src.clone();
+                let mut new_src = src;
                 if needs_src_rewrite {
-                    new_src = Operand::Reg(Register::R10);
+                    new_src = Operand::Reg(Register::R11);
                     fixed.push(Instr::Mov {
                         ty: AsmType::Quadword,
                         src,
-                        dst: new_src.clone(),
+                        dst: new_src,
                     });
                 }
+                let reg = get_scratch_reg(ty);
+
                 fixed.extend(vec![
                     Instr::Mov {
                         ty,
-                        src: d.clone(),
-                        dst: Operand::Reg(Register::R11),
+                        src: d,
+                        dst: reg,
                     },
                     Instr::Binary {
                         ty,
                         binop: BinaryOp::Mult,
                         src: new_src,
-                        dst: Operand::Reg(Register::R11),
+                        dst: reg,
                     },
                     Instr::Mov {
                         ty,
-                        src: Operand::Reg(Register::R11),
+                        src: reg,
                         dst: d,
                     },
                 ])
             }
-            // idiv can't use an immediate as its destination so move into a register
+            // Idiv can't use an immediate as its destination so move into a register
             Instr::IDiv(ty, Operand::Imm(n)) => fixed.extend(vec![
                 Instr::Mov {
                     ty,
@@ -971,6 +1591,23 @@ fn fixup_instructions(instrs: Vec<Instr>) -> Vec<Instr> {
                 },
                 Instr::Div(ty, Operand::Reg(Register::R10)),
             ]),
+            // Comisd must have a register for its rhs
+            Instr::Cmp {
+                ty: AsmType::Double,
+                lhs,
+                rhs,
+            } if is_memory(&rhs) => fixed.extend(vec![
+                Instr::Mov {
+                    ty: AsmType::Double,
+                    src: rhs,
+                    dst: Operand::Reg(Register::XMM15),
+                },
+                Instr::Cmp {
+                    ty: AsmType::Double,
+                    lhs,
+                    rhs: Operand::Reg(Register::XMM15),
+                },
+            ]),
             Instr::Cmp {
                 ty,
                 lhs,
@@ -978,13 +1615,13 @@ fn fixup_instructions(instrs: Vec<Instr>) -> Vec<Instr> {
             } => {
                 let needs_lhs_rewrite =
                     ty == AsmType::Quadword && matches!(lhs, Operand::Imm(n) if !in_int_range(n));
-                let mut new_lhs = lhs.clone();
+                let mut new_lhs = lhs;
                 if needs_lhs_rewrite {
                     new_lhs = Operand::Reg(Register::R10);
                     fixed.push(Instr::Mov {
                         ty: AsmType::Quadword,
                         src: lhs,
-                        dst: new_lhs.clone(),
+                        dst: new_lhs,
                     });
                 }
                 fixed.extend(vec![
@@ -1000,7 +1637,11 @@ fn fixup_instructions(instrs: Vec<Instr>) -> Vec<Instr> {
                     },
                 ])
             }
-            Instr::Cmp { ty, lhs: l, rhs: r } if is_memory(&l) || is_memory(&r) => {
+            Instr::Cmp { ty, lhs: l, rhs: r }
+                if ty != AsmType::Double && (is_memory(&l) || is_memory(&r)) =>
+            {
+                // cmp can't use memory locations for integer types
+                // TODO: pretty sure this should be that BOTH lhs and rhs are in memory, not either
                 fixed.extend(vec![
                     Instr::Mov {
                         ty,
@@ -1023,7 +1664,7 @@ fn fixup_instructions(instrs: Vec<Instr>) -> Vec<Instr> {
                 Instr::Push(Operand::Reg(Register::R10)),
             ]),
             Instr::Movsx { src, dst } => {
-                let mut new_src = src.clone();
+                let mut new_src = src;
                 // movsx can't have an immediate as it's source
                 if matches!(src, Operand::Imm(_)) {
                     fixed.push(Instr::Mov {
@@ -1034,7 +1675,7 @@ fn fixup_instructions(instrs: Vec<Instr>) -> Vec<Instr> {
                     new_src = Operand::Reg(Register::R10);
                 }
                 let mut post_instr = vec![];
-                let mut new_dst = dst.clone();
+                let mut new_dst = dst;
                 // And can't have a memory location as its dst
                 if is_memory(&dst) {
                     post_instr = vec![Instr::Mov {
@@ -1076,10 +1717,64 @@ fn fixup_instructions(instrs: Vec<Instr>) -> Vec<Instr> {
                     dst,
                 },
             ]),
+            // Cvttsd2si must have a non-constant source and register destination
+            Instr::Cvttsd2si { ty, src, dst } if is_memory(&dst) => fixed.extend(vec![
+                Instr::Cvttsd2si {
+                    ty,
+                    src,
+                    dst: Operand::Reg(Register::R11),
+                },
+                Instr::Mov {
+                    ty,
+                    src: Operand::Reg(Register::R11),
+                    dst,
+                },
+            ]),
+            // Cvttsi2sd must have a non-constant source and register destination
+            Instr::Cvtsi2sd { ty, src, dst }
+                if is_memory(&dst) || matches!(src, Operand::Imm(_)) =>
+            {
+                let src_reg = if matches!(src, Operand::Imm(_)) {
+                    let reg = Operand::Reg(Register::R10);
+                    fixed.push(Instr::Mov { ty, src, dst: reg });
+                    reg
+                } else {
+                    src
+                };
+                if is_memory(&dst) {
+                    let dst_reg = Operand::Reg(Register::XMM15);
+                    fixed.extend(vec![
+                        Instr::Cvtsi2sd {
+                            ty,
+                            src: src_reg,
+                            dst: dst_reg,
+                        },
+                        Instr::Mov {
+                            ty: AsmType::Double,
+                            src: dst_reg,
+                            dst,
+                        },
+                    ])
+                } else {
+                    fixed.push(Instr::Cvtsi2sd {
+                        ty,
+                        src: src_reg,
+                        dst,
+                    })
+                }
+            }
             i => fixed.push(i),
         }
     }
     fixed
+}
+
+fn get_scratch_reg(ty: AsmType) -> Operand {
+    Operand::Reg(if ty == AsmType::Double {
+        Register::XMM15
+    } else {
+        Register::R10
+    })
 }
 
 // Determine if a constant is in the 32-bit range. In order to avoid
@@ -1089,8 +1784,14 @@ fn in_int_range(n: i64) -> bool {
 }
 
 pub enum AsmEntry {
-    Obj { ty: AsmType, is_static: bool },
-    Fun { _defined: bool },
+    Obj {
+        ty: AsmType,
+        is_static: bool,
+        is_constant: bool,
+    },
+    Fun {
+        _defined: bool,
+    },
 }
 
 fn convert_symbols(symbols: &HashMap<Symbol, (Type, Attrs)>) -> HashMap<Symbol, AsmEntry> {
@@ -1109,6 +1810,7 @@ fn convert_symbols(symbols: &HashMap<Symbol, (Type, Attrs)>) -> HashMap<Symbol, 
                 AsmEntry::Obj {
                     ty: ty_asm_type(ty),
                     is_static,
+                    is_constant: false,
                 }
             }
         };

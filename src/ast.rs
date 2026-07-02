@@ -149,7 +149,7 @@ pub struct Var<E> {
 #[derive(Debug, PartialEq, Clone)]
 pub struct Function<E> {
     pub name: Symbol,
-    pub params: Vec<(Symbol, Type)>,
+    pub params: Vec<Symbol>,
     pub body: Option<Vec<BlockItem<E>>>,
     pub storage: Option<StorageClass>,
     pub ty: Type,

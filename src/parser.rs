@@ -135,7 +135,7 @@ impl<'a> Parser<'a> {
         let name = self.name()?;
         self.consume(TokenKind::LParen)?;
         let params = self.param_list()?;
-        let (_, param_tys): (Vec<_>, Vec<_>) = params.clone().into_iter().unzip();
+        let (params, param_tys): (Vec<_>, Vec<_>) = params.into_iter().unzip();
         self.consume(TokenKind::RParen)?;
         let body = if self.current().kind == TokenKind::LBrace {
             Some(self.block()?)

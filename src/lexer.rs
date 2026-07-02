@@ -109,7 +109,6 @@ impl<'a> Lexer<'a> {
     }
 
     fn double(&mut self, start: usize) -> Result<Token<'a>, CompileError> {
-        println!("double");
         let (mut end, mut c) = *self.peek().unwrap();
 
         if c == '.' {

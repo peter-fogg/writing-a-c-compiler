@@ -87,13 +87,29 @@ pub enum Instr {
         src: Val,
         dst: Val,
     },
+    DoubleToInt {
+        src: Val,
+        dst: Val,
+    },
+    DoubleToUInt {
+        src: Val,
+        dst: Val,
+    },
+    IntToDouble {
+        src: Val,
+        dst: Val,
+    },
+    UIntToDouble {
+        src: Val,
+        dst: Val,
+    },
 }
 
 #[derive(Debug, PartialEq, Clone)]
 pub enum TopLevel {
     TackyFunction {
         name: Symbol,
-        params: Vec<(Symbol, Type)>,
+        params: Vec<Symbol>,
         instructions: Vec<Instr>,
         global: bool,
     },
@@ -580,14 +596,30 @@ impl<'a> TackifyState<'a> {
                 let expr_size = size(expr_type).unwrap();
                 let cast_size = size(&ty).unwrap();
 
-                if cast_size == expr_size {
-                    instrs.push(Instr::Copy { src, dst })
-                } else if cast_size < expr_size {
-                    instrs.push(Instr::Truncate { src, dst })
-                } else if signed(expr_type) {
-                    instrs.push(Instr::SignExtend { src, dst });
-                } else {
-                    instrs.push(Instr::ZeroExtend { src, dst });
+                match (expr_type, ty) {
+                    (Type::Double, Type::Int | Type::Long) => {
+                        instrs.push(Instr::DoubleToInt { src, dst })
+                    }
+                    (Type::Double, Type::UInt | Type::ULong) => {
+                        instrs.push(Instr::DoubleToUInt { src, dst })
+                    }
+                    (Type::Int | Type::Long, Type::Double) => {
+                        instrs.push(Instr::IntToDouble { src, dst })
+                    }
+                    (Type::UInt | Type::ULong, Type::Double) => {
+                        instrs.push(Instr::UIntToDouble { src, dst })
+                    }
+                    _ => {
+                        if cast_size == expr_size {
+                            instrs.push(Instr::Copy { src, dst })
+                        } else if cast_size < expr_size {
+                            instrs.push(Instr::Truncate { src, dst })
+                        } else if signed(expr_type) {
+                            instrs.push(Instr::SignExtend { src, dst });
+                        } else {
+                            instrs.push(Instr::ZeroExtend { src, dst });
+                        }
+                    }
                 }
 
                 dst

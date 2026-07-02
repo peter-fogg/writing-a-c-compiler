@@ -3,7 +3,7 @@ use std::collections::{HashMap, HashSet};
 use crate::CompileError;
 use crate::ast::{
     BlockItem, CaseInfo, Const, Declaration, Expression, ForInit, Function, Program, Statement,
-    StorageClass, Type, Var,
+    StorageClass, Var,
 };
 use crate::interner::{Interner, Symbol};
 use crate::typecheck::{CheckResult, TypeChecker};
@@ -113,7 +113,7 @@ impl ResolveState<'_> {
         }
     }
 
-    fn param(&mut self, (name, ty): (Symbol, Type)) -> (Symbol, Type) {
+    fn param(&mut self, name: Symbol) -> Symbol {
         if self.current_scope_has(&name) {
             panic!("Duplicate variable name {}", name);
         }
@@ -123,7 +123,7 @@ impl ResolveState<'_> {
             linkage: Linkage::None,
         };
         self.put_env(name, res_info);
-        (new_name, ty)
+        new_name
     }
 
     fn func_declaration(
@@ -646,15 +646,15 @@ fn gather_block(
 
 // Return the actual compile-time value of a constant, since we need
 // to compare these in cases to make sure we don't have
-// duplicates. This returns i64 because any int or long must fit into
+// duplicates. This returns u64 because any int or long must fit into
 // that value.
-pub fn actual_value(c: Const) -> i64 {
+pub fn actual_case_value(c: Const) -> u64 {
     match c {
-        Const::Int(n) => n as i64,
-        Const::Long(n) => n,
-        Const::UInt(n) => n as i64,
-        Const::ULong(n) => n as i64,
-        Const::Double(n) => n as i64, // TODO: this seems sketch -- should it be a straight bitwise cast?
+        Const::Int(n) => n as u64,
+        Const::Long(n) => n as u64,
+        Const::UInt(n) => n as u64,
+        Const::ULong(n) => n,
+        Const::Double(n) => n.to_bits(), // TODO: this seems sketch -- should it be a straight bitwise cast?
     }
 }
 
@@ -680,7 +680,7 @@ fn gather_statement(stmt: &mut Statement<Expression>, mut cases: Option<&mut Vec
                 Expression::Constant(n) if cases.is_some() => {
                     let c = cases.unwrap();
                     if c.iter().any(|ci| {
-                        matches!(ci, CaseInfo::Case { expr: m, label: _ } if actual_value(*n) == actual_value(*m)
+                        matches!(ci, CaseInfo::Case { expr: m, label: _ } if actual_case_value(*n) == actual_case_value(*m)
                         )
                     }) {
                         panic!("Duplicate case in switch statement");

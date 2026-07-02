@@ -9,3 +9,4 @@
 - implement function to guess which parameter is missing/added in incorrect function calls. Levenshtein distance on parameter types? sure i guess
 - separate Type into another place... typechecking module maybe?
 - rewrite lexer to use regular expressions?
+- separate huge functions with matches into smaller functions (example: codegen assemble_instructions())
