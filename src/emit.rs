@@ -42,7 +42,7 @@ fn emit_top_level(
             file.write_all("\tpushq\t%rbp\n".as_bytes())?;
             file.write_all("\tmovq\t%rsp, %rbp\n".as_bytes())?;
             // TODO allocate stack space here by subtracting stack offset from RSP
-            file.write(format!("\tsubq\t${stack_size},\t%rsp\n").as_bytes())?;
+            file.write_all(format!("\tsubq\t${stack_size},\t%rsp\n").as_bytes())?;
             for instr in instructions {
                 emit_instr(instr, interner, symbols, file)?;
             }

@@ -157,6 +157,12 @@ pub enum AsmTopLevel {
 
 pub type Assembly = Vec<AsmTopLevel>;
 
+type ClassifiedParams = (
+    Vec<(AsmType, Operand)>,
+    Vec<(AsmType, Operand)>,
+    Vec<(AsmType, Operand)>,
+);
+
 struct ReplaceState<'a> {
     offsets: HashMap<Symbol, u16>,
     max_offset: u16,
@@ -169,10 +175,10 @@ struct AssembleState<'a> {
     constants: HashMap<(u64, u8), AsmTopLevel>,
 }
 
-pub fn assemble<'a>(
+pub fn assemble(
     top_levels: Tacky,
     symbols: &HashMap<Symbol, (Type, Attrs)>,
-    interner: &'a mut Interner,
+    interner: &mut Interner,
 ) -> (Assembly, HashMap<Symbol, AsmEntry>) {
     let mut asm_top_levels = Vec::with_capacity(top_levels.len());
     let mut state = AssembleState {
@@ -182,47 +188,43 @@ pub fn assemble<'a>(
     };
     // Assemble the TACKY instructions
     for top_level in top_levels {
-        asm_top_levels.push(state.assemble_top_level(top_level, &symbols));
+        asm_top_levels.push(state.assemble_top_level(top_level, symbols));
     }
     let mut backend_symbols = convert_symbols(symbols);
     for top_level in &mut asm_top_levels {
-        match top_level {
-            AsmTopLevel::Function {
-                instructions,
-                stack_size,
-                ..
-            } => {
-                let new_stack_size = replace_pseudo(instructions, &backend_symbols);
+        if let AsmTopLevel::Function {
+            instructions,
+            stack_size,
+            ..
+        } = top_level
+        {
+            let new_stack_size = replace_pseudo(instructions, &backend_symbols);
 
-                let fixed = fixup_instructions(instructions.to_vec());
+            let fixed = fixup_instructions(instructions.to_vec());
 
-                let rounded = match new_stack_size % 16 {
-                    0 => new_stack_size,
-                    n => new_stack_size + (16 - n),
-                };
+            let rounded = match new_stack_size % 16 {
+                0 => new_stack_size,
+                n => new_stack_size + (16 - n),
+            };
 
-                *stack_size = rounded;
-                *instructions = fixed;
-            }
-            _ => (),
+            *stack_size = rounded;
+            *instructions = fixed;
         }
     }
     // Add floating-point constants to both the symbol table and the
     // top levels so that we can use local labels for them
     for (_, constant) in state.constants.drain() {
-        match constant {
-            AsmTopLevel::StaticConst { name, .. } => {
-                backend_symbols.insert(
-                    name,
-                    AsmEntry::Obj {
-                        ty: AsmType::Double,
-                        is_static: true,
-                        is_constant: true,
-                    },
-                );
-            }
-            _ => (),
+        if let AsmTopLevel::StaticConst { name, .. } = constant {
+            backend_symbols.insert(
+                name,
+                AsmEntry::Obj {
+                    ty: AsmType::Double,
+                    is_static: true,
+                    is_constant: true,
+                },
+            );
         }
+
         asm_top_levels.push(constant)
     }
 
@@ -1096,11 +1098,7 @@ impl<'a> AssembleState<'a> {
         &mut self,
         values: Vec<Val>,
         symbols: &HashMap<Symbol, (Type, Attrs)>,
-    ) -> (
-        Vec<(AsmType, Operand)>,
-        Vec<(AsmType, Operand)>,
-        Vec<(AsmType, Operand)>,
-    ) {
+    ) -> ClassifiedParams {
         let mut int_reg_args = Vec::new();
         let mut double_reg_args = Vec::new();
         let mut stack_args = Vec::new();
