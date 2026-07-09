@@ -252,6 +252,8 @@ impl<'a> InternerDisplay<'a> for Expression {
                 lhs.display(interner),
                 rhs.display(interner)
             ),
+            Expression::AddrOf(expr) => format!("AddrOf({})", expr.display(interner)),
+            Expression::Deref(expr) => format!("Deref({})", expr.display(interner)),
         }
     }
 }
@@ -299,6 +301,12 @@ impl<'a> InternerDisplay<'a> for TypedExpression {
             }
             TypedExpression::Cast(ty, expr) => {
                 format!("Cast({:?}, {})", ty, expr.display(interner))
+            }
+            TypedExpression::AddrOf(ty, expr) => {
+                format!("AddrOf({:?}, {})", ty, expr.display(interner))
+            }
+            TypedExpression::Deref(ty, expr) => {
+                format!("Deref({:?}, {})", ty, expr.display(interner))
             }
         }
     }

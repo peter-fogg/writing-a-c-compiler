@@ -624,6 +624,8 @@ impl<'a> TackifyState<'a> {
 
                 dst
             }
+            TypedExpression::AddrOf(_, _) => todo!(),
+            TypedExpression::Deref(_, _) => todo!(),
         }
     }
 

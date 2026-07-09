@@ -34,6 +34,8 @@ pub enum TypedExpression {
     ),
     Call(Type, Symbol, Vec<TypedExpression>),
     Cast(Type, Box<TypedExpression>),
+    Deref(Type, Box<TypedExpression>),
+    AddrOf(Type, Box<TypedExpression>),
 }
 
 #[derive(PartialEq, Debug, Copy, Clone)]
@@ -707,6 +709,8 @@ impl<'a> TypeChecker<'a> {
                     Box::new(cast(typed_else, &ty)),
                 )
             }
+            Expression::AddrOf(_) => todo!(),
+            Expression::Deref(_) => todo!(),
         })
     }
 }
@@ -724,6 +728,8 @@ pub fn get_type(expr: &TypedExpression) -> &Type {
         TypedExpression::Crement(ty, _, _, _) => ty,
         TypedExpression::Unary(ty, _, _) => ty,
         TypedExpression::Var(ty, _) => ty,
+        TypedExpression::AddrOf(ty, _) => ty,
+        TypedExpression::Deref(ty, _) => ty,
     }
 }
 
@@ -749,6 +755,7 @@ pub fn size(t: &Type) -> Result<u8, CompileError> {
                 "Can't get size of a function type",
             )));
         }
+        Type::Pointer(_) => todo!(),
     })
 }
 
@@ -832,6 +839,7 @@ fn convert_case(expr: &Const, ty: &Type) -> Const {
         Type::ULong => Const::ULong(actual_case_value(*expr)),
         Type::Double => unreachable!("double in case expression"),
         Type::Fun(_, _) => unreachable!("function type in case expression"),
+        Type::Pointer(_) => unreachable!("pointer type in case expression"),
     }
 }
 

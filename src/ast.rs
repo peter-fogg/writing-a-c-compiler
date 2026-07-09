@@ -77,6 +77,8 @@ pub enum Expression {
     Conditional(Box<Expression>, Box<Expression>, Box<Expression>),
     Call(Symbol, Vec<Expression>),
     Cast(Type, Box<Expression>),
+    Deref(Box<Expression>),
+    AddrOf(Box<Expression>),
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -136,6 +138,7 @@ pub enum Type {
     ULong,
     Double,
     Fun(Vec<Type>, Box<Type>),
+    Pointer(Box<Type>),
 }
 
 #[derive(Debug, PartialEq, Clone)]

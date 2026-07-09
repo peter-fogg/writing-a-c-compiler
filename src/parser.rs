@@ -5,6 +5,23 @@ use crate::ast::*;
 use crate::interner::{Interner, Symbol};
 use crate::lexer::{Lexer, Token, TokenKind};
 
+#[derive(Debug, PartialEq, Clone)]
+enum Declarator {
+    Ident(Symbol),
+    Pointer(Box<Declarator>),
+    Fun(Vec<Param>, Box<Declarator>),
+}
+
+// This is a funny way to encode the natural numbers
+#[derive(Debug, PartialEq, Clone)]
+enum AbstractDeclarator {
+    Pointer(Box<AbstractDeclarator>),
+    AbstractBase,
+}
+
+#[derive(Debug, PartialEq, Clone)]
+struct Param(Type, Declarator);
+
 pub struct Parser<'a> {
     tokens: Lexer<'a>,
     last_token: Option<Token<'a>>,
@@ -102,16 +119,6 @@ impl<'a> Parser<'a> {
         Ok(block_items)
     }
 
-    fn name(&mut self) -> ParseResult<Symbol> {
-        match self.current().kind {
-            TokenKind::Id(id) => {
-                self.advance()?;
-                Ok(self.interner.intern(id.into()))
-            }
-            t => Err(self.report_error(format!("Expected identifier, got {:?}", t))),
-        }
-    }
-
     fn declaration(&mut self) -> ParseResult<Declaration<Expression>> {
         let mut storage_and_type = vec![];
         while Self::is_specifier(self.current()) {
@@ -120,23 +127,22 @@ impl<'a> Parser<'a> {
         }
 
         let (ty, storage) = self.type_and_storage_class(storage_and_type)?;
-        Ok(if self.next().kind == TokenKind::LParen {
-            Declaration::Func(self.func_declaration(ty, storage)?)
+        let declarator = self.declarator()?;
+        let (name, decl_type, params) = self.process_declarator(declarator, ty)?;
+        Ok(if matches!(decl_type, Type::Fun(_, _)) {
+            Declaration::Func(self.func_declaration(decl_type, name, params, storage)?)
         } else {
-            Declaration::Var(self.var_declaration(ty, storage)?)
+            Declaration::Var(self.var_declaration(decl_type, name, storage)?)
         })
     }
 
     fn func_declaration(
         &mut self,
-        ret_ty: Type,
+        ty: Type,
+        name: Symbol,
+        params: Vec<Symbol>,
         storage: Option<StorageClass>,
     ) -> ParseResult<Function<Expression>> {
-        let name = self.name()?;
-        self.consume(TokenKind::LParen)?;
-        let params = self.param_list()?;
-        let (params, param_tys): (Vec<_>, Vec<_>) = params.into_iter().unzip();
-        self.consume(TokenKind::RParen)?;
         let body = if self.current().kind == TokenKind::LBrace {
             Some(self.block()?)
         } else {
@@ -149,16 +155,16 @@ impl<'a> Parser<'a> {
             body,
             params,
             storage,
-            ty: Type::Fun(param_tys.clone(), Box::new(ret_ty)),
+            ty,
         })
     }
 
     fn var_declaration(
         &mut self,
         ty: Type,
+        name: Symbol,
         storage: Option<StorageClass>,
     ) -> ParseResult<Var<Expression>> {
-        let name = self.name()?;
         let init = match self.current().kind {
             TokenKind::Equals => {
                 self.consume(TokenKind::Equals)?;
@@ -177,6 +183,82 @@ impl<'a> Parser<'a> {
             storage,
             ty,
         })
+    }
+
+    // Either an identifier or a parenthesized declarator
+    fn simple_declarator(&mut self) -> ParseResult<Declarator> {
+        match self.current().kind {
+            TokenKind::Id(id) => {
+                self.advance()?;
+                Ok(Declarator::Ident(self.interner.intern(id.into())))
+            }
+            TokenKind::LParen => {
+                self.consume(TokenKind::LParen)?;
+                let declarator = self.declarator()?;
+                self.consume(TokenKind::RParen)?;
+                Ok(declarator)
+            }
+            kind => Err(self.report_error(format!("Expected id or parenthesis, found {kind:?}"))),
+        }
+    }
+
+    // A simple declarator, or a function declarator
+    fn direct_declarator(&mut self) -> ParseResult<Declarator> {
+        let simple = self.simple_declarator()?;
+        if matches!(self.current().kind, TokenKind::LParen) {
+            self.consume(TokenKind::LParen)?;
+            if self.current().kind == TokenKind::Void {
+                self.consume(TokenKind::Void)?;
+                self.consume(TokenKind::RParen)?;
+                return Ok(Declarator::Fun(vec![], Box::new(simple)));
+            }
+            let mut params = vec![];
+            while {
+                let ty = self.type_specifier()?;
+                let declarator = self.declarator()?;
+
+                params.push(Param(ty, declarator));
+
+                let comma = self.current().kind == TokenKind::Comma;
+                if comma {
+                    self.consume(TokenKind::Comma)?;
+                }
+                comma
+            } {} // This is a sneaky hack for a do-while loop
+            self.consume(TokenKind::RParen)?;
+
+            return Ok(Declarator::Fun(params, Box::new(simple)));
+        }
+        Ok(simple)
+    }
+
+    fn declarator(&mut self) -> ParseResult<Declarator> {
+        match self.current().kind {
+            TokenKind::Star => {
+                self.consume(TokenKind::Star)?;
+                let declarator = self.declarator()?;
+                Ok(Declarator::Pointer(Box::new(declarator)))
+            }
+            _ => self.direct_declarator(),
+        }
+    }
+
+    fn abstract_declarator(&mut self) -> ParseResult<AbstractDeclarator> {
+        match self.current().kind {
+            TokenKind::Star => {
+                self.consume(TokenKind::Star)?;
+                let declarator = self.abstract_declarator()?;
+                Ok(AbstractDeclarator::Pointer(Box::new(declarator)))
+            }
+            TokenKind::LParen => {
+                self.consume(TokenKind::LParen)?;
+
+                let declarator = self.abstract_declarator()?;
+                self.consume(TokenKind::RParen)?;
+                Ok(declarator)
+            }
+            _ => Ok(AbstractDeclarator::AbstractBase),
+        }
     }
 
     fn type_and_storage_class(
@@ -260,7 +342,7 @@ impl<'a> Parser<'a> {
 
     fn type_specifier(&mut self) -> ParseResult<Type> {
         let mut types = vec![];
-        while Self::is_type(self.current()) {
+        while Self::is_type_specifier(self.current()) {
             match self.current().kind {
                 kind @ (TokenKind::Int
                 | TokenKind::Long
@@ -274,25 +356,52 @@ impl<'a> Parser<'a> {
         self.consolidate_type_specifier(types)
     }
 
-    fn param_list(&mut self) -> ParseResult<Vec<(Symbol, Type)>> {
-        let mut params = vec![];
-        if self.current().kind == TokenKind::Void {
-            self.consume(TokenKind::Void)?;
-            return Ok(params);
-        }
-
-        while {
-            let ty = self.type_specifier()?;
-            params.push((self.name()?, ty));
-
-            let comma = self.current().kind == TokenKind::Comma;
-            if comma {
-                self.consume(TokenKind::Comma)?;
+    fn process_declarator(
+        &self,
+        declarator: Declarator,
+        base_type: Type,
+    ) -> ParseResult<(Symbol, Type, Vec<Symbol>)> {
+        match declarator {
+            Declarator::Ident(name) => Ok((name, base_type, vec![])),
+            Declarator::Pointer(d) => {
+                let derived_type = Type::Pointer(Box::new(base_type));
+                self.process_declarator(*d, derived_type)
             }
-            comma
-        } {} // This is a sneaky hack for a do-while loop
+            Declarator::Fun(params, d) => {
+                if let Declarator::Ident(name) = *d {
+                    let mut param_names = Vec::with_capacity(params.len());
+                    let mut param_types = Vec::with_capacity(params.len());
 
-        Ok(params)
+                    for Param(p_base_ty, p_declarator) in params {
+                        let (param_name, param_ty, _) =
+                            self.process_declarator(p_declarator, p_base_ty)?;
+                        if matches!(param_ty, Type::Fun(_, _)) {
+                            return Err(self.report_error(
+                                "Can't use a function pointer in parameters".to_string(),
+                            ));
+                        }
+                        param_names.push(param_name);
+                        param_types.push(param_ty);
+                    }
+
+                    let derived_type = Type::Fun(param_types, Box::new(base_type));
+                    Ok((name, derived_type, param_names))
+                } else {
+                    Err(self.report_error(format!(
+                        "Can't apply additional type derivation {params:?} {d:?} to function type"
+                    )))
+                }
+            }
+        }
+    }
+
+    fn process_abstract_declarator(declarator: AbstractDeclarator, base_type: Type) -> Type {
+        match declarator {
+            AbstractDeclarator::AbstractBase => base_type,
+            AbstractDeclarator::Pointer(declarator) => {
+                Self::process_abstract_declarator(*declarator, Type::Pointer(Box::new(base_type)))
+            }
+        }
     }
 
     fn block_item(&mut self) -> ParseResult<BlockItem<Expression>> {
@@ -676,9 +785,11 @@ impl<'a> Parser<'a> {
             | TokenKind::DoubleConstant(_) => self.constant()?,
             TokenKind::LParen => {
                 self.consume(TokenKind::LParen)?;
-                if Self::is_type(self.current()) {
-                    let ty = self.type_specifier()?;
+                if Self::is_type_specifier(self.current()) {
+                    let base_ty = self.type_specifier()?;
+                    let abstract_declarator = self.abstract_declarator()?;
                     self.consume(TokenKind::RParen)?;
+                    let ty = Self::process_abstract_declarator(abstract_declarator, base_ty);
                     let expr = self.expression(Prec::Postfix)?;
                     Expression::Cast(ty, Box::new(expr))
                 } else {
@@ -691,6 +802,16 @@ impl<'a> Parser<'a> {
                 let un_op = self.unary_op()?;
                 let inner_expr = self.expression(Prec::Unary)?;
                 Expression::Unary(un_op, Box::new(inner_expr))
+            }
+            TokenKind::Star => {
+                self.consume(TokenKind::Star)?;
+                let inner_expr = self.expression(Prec::Unary)?;
+                Expression::Deref(Box::new(inner_expr))
+            }
+            TokenKind::Ampersand => {
+                self.consume(TokenKind::Ampersand)?;
+                let inner_expr = self.expression(Prec::Unary)?;
+                Expression::AddrOf(Box::new(inner_expr))
             }
             TokenKind::Id(id) => {
                 self.advance()?;
@@ -816,7 +937,7 @@ impl<'a> Parser<'a> {
         )
     }
 
-    fn is_type(t: Token<'a>) -> bool {
+    fn is_type_specifier(t: Token<'a>) -> bool {
         matches!(
             t.kind,
             TokenKind::Long

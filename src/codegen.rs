@@ -236,6 +236,7 @@ fn alignment(ty: &Type) -> u8 {
         Type::Int | Type::UInt => 4,
         Type::Long | Type::ULong | Type::Double => 8,
         Type::Fun(_, _) => unreachable!("alignment of function type"),
+        Type::Pointer(_) => todo!(),
     }
 }
 
@@ -245,6 +246,7 @@ fn val_asm_type(val: &Val, symbols: &HashMap<Symbol, (Type, Attrs)>) -> AsmType 
         Type::Long | Type::ULong => AsmType::Quadword,
         Type::Double => AsmType::Double,
         Type::Fun(_, _) => unreachable!("function used as a variable post-typechecking"),
+        Type::Pointer(_) => todo!(),
     }
 }
 
@@ -256,6 +258,7 @@ fn ty_asm_type(ty: &Type) -> AsmType {
             unreachable!("function used as variable post-typechecking")
         }
         Type::Double => AsmType::Double,
+        Type::Pointer(_) => todo!(),
     }
 }
 

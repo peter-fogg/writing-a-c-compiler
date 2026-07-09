@@ -326,6 +326,8 @@ impl ResolveState<'_> {
                 }
             }
             Expression::Cast(ty, expr) => Expression::Cast(ty, Box::new(self.expression(*expr))),
+            Expression::AddrOf(_) => todo!(),
+            Expression::Deref(_) => todo!(),
         }
     }
 
