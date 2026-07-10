@@ -6,7 +6,7 @@ use crate::ast::{
     StorageClass, Var,
 };
 use crate::interner::{Interner, Symbol};
-use crate::typecheck::{CheckResult, TypeChecker};
+use crate::typecheck::{CheckResult, TypeChecker, is_lvalue};
 
 #[derive(PartialEq, Eq, Debug, Copy, Clone)]
 enum Linkage {
@@ -263,7 +263,7 @@ impl ResolveState<'_> {
     pub fn expression(&mut self, expr: Expression) -> Expression {
         match expr {
             Expression::Assign(lhs, rhs) => {
-                if let Expression::Var(_) = *lhs {
+                if is_lvalue(&lhs) {
                     Expression::Assign(
                         Box::new(self.expression(*lhs)),
                         Box::new(self.expression(*rhs)),
@@ -288,7 +288,7 @@ impl ResolveState<'_> {
                 Box::new(self.expression(*rhs)),
             ),
             Expression::Compound(compound_op, lhs, rhs) => {
-                if let Expression::Var(_) = *lhs {
+                if is_lvalue(&lhs) {
                     Expression::Compound(
                         compound_op,
                         Box::new(self.expression(*lhs)),
@@ -300,7 +300,7 @@ impl ResolveState<'_> {
             }
             Expression::Constant(n) => Expression::Constant(n),
             Expression::Crement(fixity, crement, expr) => {
-                if let Expression::Var(_) = *expr {
+                if is_lvalue(&expr) {
                     Expression::Crement(fixity, crement, Box::new(self.expression(*expr)))
                 } else {
                     panic!("Increment/decrement operation on non-lvalue {:?}", expr);
@@ -326,8 +326,9 @@ impl ResolveState<'_> {
                 }
             }
             Expression::Cast(ty, expr) => Expression::Cast(ty, Box::new(self.expression(*expr))),
-            Expression::AddrOf(_) => todo!(),
-            Expression::Deref(_) => todo!(),
+            Expression::AddrOf(expr) => Expression::AddrOf(Box::new(self.expression(*expr))),
+
+            Expression::Deref(expr) => Expression::Deref(Box::new(self.expression(*expr))),
         }
     }
 
