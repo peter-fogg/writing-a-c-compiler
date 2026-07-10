@@ -10,7 +10,7 @@ pub enum Operand {
     Imm(i64),
     Reg(Register),
     Pseudo(Symbol),
-    Stack(i16),
+    Memory(Register, i16),
     Data(Symbol),
 }
 
@@ -43,6 +43,7 @@ pub enum Register {
     DI,
     SI,
     SP,
+    BP,
     R8,
     R9,
     R10,
@@ -95,6 +96,10 @@ pub enum Instr {
         dst: Operand,
     },
     MovZeroExtend {
+        src: Operand,
+        dst: Operand,
+    },
+    Lea {
         src: Operand,
         dst: Operand,
     },
@@ -234,31 +239,28 @@ pub fn assemble(
 fn alignment(ty: &Type) -> u8 {
     match ty {
         Type::Int | Type::UInt => 4,
-        Type::Long | Type::ULong | Type::Double => 8,
+        Type::Long | Type::ULong | Type::Double | Type::Pointer(_) => 8,
         Type::Fun(_, _) => unreachable!("alignment of function type"),
-        Type::Pointer(_) => todo!(),
     }
 }
 
 fn val_asm_type(val: &Val, symbols: &HashMap<Symbol, (Type, Attrs)>) -> AsmType {
     match val_tacky_type(val, symbols) {
         Type::Int | Type::UInt => AsmType::Longword,
-        Type::Long | Type::ULong => AsmType::Quadword,
+        Type::Long | Type::ULong | Type::Pointer(_) => AsmType::Quadword,
         Type::Double => AsmType::Double,
         Type::Fun(_, _) => unreachable!("function used as a variable post-typechecking"),
-        Type::Pointer(_) => todo!(),
     }
 }
 
 fn ty_asm_type(ty: &Type) -> AsmType {
     match ty {
         Type::Int | Type::UInt => AsmType::Longword,
-        Type::Long | Type::ULong => AsmType::Quadword,
+        Type::Long | Type::ULong | Type::Pointer(_) => AsmType::Quadword,
         Type::Fun(_, _) => {
             unreachable!("function used as variable post-typechecking")
         }
         Type::Double => AsmType::Double,
-        Type::Pointer(_) => todo!(),
     }
 }
 
@@ -348,7 +350,7 @@ impl<'a> AssembleState<'a> {
                 for (ty, dst) in stack_params {
                     assembly.push(Instr::Mov {
                         ty,
-                        src: Operand::Stack(stack_offset),
+                        src: Operand::Memory(Register::BP, stack_offset),
                         dst,
                     });
                     stack_offset += 8;
@@ -1092,9 +1094,34 @@ impl<'a> AssembleState<'a> {
                         Instr::Label(end),
                     ]);
                 }
-                tacky::Instr::GetAddress { .. } => todo!(),
-                tacky::Instr::Load { .. } => todo!(),
-                tacky::Instr::Store { .. } => todo!(),
+                tacky::Instr::GetAddress { src, dst } => assembly.push(Instr::Lea {
+                    src: self.assemble_val(src),
+                    dst: self.assemble_val(dst),
+                }),
+                tacky::Instr::Load { ptr, dst } => assembly.extend(vec![
+                    Instr::Mov {
+                        ty: AsmType::Quadword,
+                        src: self.assemble_val(ptr),
+                        dst: Operand::Reg(Register::AX),
+                    },
+                    Instr::Mov {
+                        ty: val_asm_type(&dst, symbols),
+                        src: Operand::Memory(Register::AX, 0),
+                        dst: self.assemble_val(dst),
+                    },
+                ]),
+                tacky::Instr::Store { src, ptr } => assembly.extend(vec![
+                    Instr::Mov {
+                        ty: AsmType::Quadword,
+                        src: self.assemble_val(ptr),
+                        dst: Operand::Reg(Register::AX),
+                    },
+                    Instr::Mov {
+                        ty: val_asm_type(&src, symbols),
+                        src: self.assemble_val(src),
+                        dst: Operand::Memory(Register::AX, 0),
+                    },
+                ]),
             }
         }
         assembly
@@ -1342,6 +1369,15 @@ fn replace_pseudo(instrs: &mut [Instr], symbols: &HashMap<Symbol, AsmEntry>) -> 
                 let dst = replace_op(dst, &mut replace_state);
                 *instr = Instr::Cvttsd2si { ty, src, dst };
             }
+            Instr::Lea { .. } => {
+                let lea = std::mem::replace(instr, Instr::Ret);
+                let Instr::Lea { src, dst } = lea else {
+                    unreachable!()
+                };
+                let src = replace_op(src, &mut replace_state);
+                let dst = replace_op(dst, &mut replace_state);
+                *instr = Instr::Lea { src, dst };
+            }
             Instr::JmpCC(_, _)
             | Instr::Label(_)
             | Instr::Jmp(_)
@@ -1382,7 +1418,7 @@ fn replace_op(op: Operand, state: &mut ReplaceState) -> Operand {
                     }
                     state.max_offset
                 });
-                Operand::Stack(-(*offset as i16))
+                Operand::Memory(Register::BP, -(*offset as i16))
             }
         }
         op => op,
@@ -1390,7 +1426,7 @@ fn replace_op(op: Operand, state: &mut ReplaceState) -> Operand {
 }
 
 fn is_memory(op: &Operand) -> bool {
-    matches!(op, Operand::Data(_) | Operand::Stack(_))
+    matches!(op, Operand::Data(_) | Operand::Memory(_, _))
 }
 
 // Replace instructions if their operands are in the wrong places.
@@ -1667,9 +1703,34 @@ fn fixup_instructions(instrs: Vec<Instr>) -> Vec<Instr> {
                 },
                 Instr::Push(Operand::Reg(Register::R10)),
             ]),
+            Instr::Push(Operand::Reg(reg)) if is_xmm_reg(reg) => fixed.extend(vec![
+                Instr::Binary {
+                    ty: AsmType::Quadword,
+                    binop: BinaryOp::Sub,
+                    src: Operand::Imm(8),
+                    dst: Operand::Reg(Register::SP),
+                },
+                Instr::Mov {
+                    ty: AsmType::Double,
+                    src: Operand::Reg(reg),
+                    dst: Operand::Memory(Register::SP, 0),
+                },
+            ]),
+            // lea can't have a non-register destination
+            Instr::Lea { src, dst } if !matches!(dst, Operand::Reg(_)) => fixed.extend(vec![
+                Instr::Lea {
+                    src,
+                    dst: Operand::Reg(Register::R10),
+                },
+                Instr::Mov {
+                    ty: AsmType::Quadword,
+                    src: Operand::Reg(Register::R10),
+                    dst,
+                },
+            ]),
             Instr::Movsx { src, dst } => {
                 let mut new_src = src;
-                // movsx can't have an immediate as it's source
+                // movsx can't have an immediate as its source
                 if matches!(src, Operand::Imm(_)) {
                     fixed.push(Instr::Mov {
                         ty: AsmType::Longword,
@@ -1779,6 +1840,22 @@ fn get_scratch_reg(ty: AsmType) -> Operand {
     } else {
         Register::R10
     })
+}
+
+fn is_xmm_reg(reg: Register) -> bool {
+    matches!(
+        reg,
+        Register::XMM0
+            | Register::XMM1
+            | Register::XMM2
+            | Register::XMM3
+            | Register::XMM4
+            | Register::XMM5
+            | Register::XMM6
+            | Register::XMM7
+            | Register::XMM14
+            | Register::XMM15
+    )
 }
 
 // Determine if a constant is in the 32-bit range. In order to avoid

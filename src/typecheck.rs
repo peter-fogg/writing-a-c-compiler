@@ -23,6 +23,12 @@ pub enum TypedExpression {
         Box<TypedExpression>,
         Box<TypedExpression>,
     ),
+    Compound(
+        Type,
+        BinaryOperator,
+        Box<TypedExpression>,
+        Box<TypedExpression>,
+    ),
     Crement(Type, Fixity, Crement, Box<TypedExpression>),
     Var(Type, Symbol),
     Assign(Type, Box<TypedExpression>, Box<TypedExpression>),
@@ -588,38 +594,9 @@ impl<'a> TypeChecker<'a> {
 
                 let left_ty = get_type(&typed_lhs);
                 let ty = get_common_type(get_type(&typed_lhs), get_type(&typed_rhs))?;
-                if matches!(
-                    binop,
-                    BinaryOperator::Remainder
-                        | BinaryOperator::BitAnd
-                        | BinaryOperator::BitOr
-                        | BinaryOperator::BitXOr
-                        | BinaryOperator::ShiftLeft
-                        | BinaryOperator::ShiftRight
-                ) && ty == Type::Double
-                {
-                    return Err(CompileError::Check(format!(
-                        "invalid operation {:?} with double",
-                        binop,
-                    )));
-                }
 
-                if matches!(
-                    binop,
-                    BinaryOperator::BitAnd
-                        | BinaryOperator::BitOr
-                        | BinaryOperator::BitXOr
-                        | BinaryOperator::ShiftLeft
-                        | BinaryOperator::ShiftRight
-                        | BinaryOperator::Divide
-                        | BinaryOperator::Multiply
-                        | BinaryOperator::Remainder
-                ) && is_pointer_type(&ty)
-                {
-                    return Err(CompileError::Check(format!(
-                        "invalid operation {binop:?} with pointer",
-                    )));
-                }
+                check_double_binop(binop, &ty)?;
+                check_pointer_binop(binop, &ty)?;
 
                 let cast_lhs = cast(typed_lhs.clone(), &ty);
                 let cast_rhs = cast(typed_rhs.clone(), &ty);
@@ -661,81 +638,30 @@ impl<'a> TypeChecker<'a> {
 
                 TypedExpression::Assign(left_type.clone(), Box::new(typed_lhs), Box::new(cast_rhs))
             }
-            Expression::Compound(op, lhs, rhs) => {
-                // Desugar compound expressions into an assignment and
-                // a binary op. Example: x += 1 desugars to x = x +
-                // 1. This is a safe translation because the variable
-                // analysis pass has already determined that the LHS
-                // of the expression is a variable, and evaluating a
-                // variable twice in the rewritten expression doesn't
-                // affect the result.
-
-                // Desugaring instead of a straight translation into
-                // the typed AST makes this easier because we can
-                // separate the LHS type and the RHS type here, while
-                // we can't while generating TACKY.
+            Expression::Compound(binop, lhs, rhs) => {
                 let typed_lhs = self.check_expr(*lhs)?;
                 let typed_rhs = self.check_expr(*rhs)?;
 
-                let lhs_ty = get_type(&typed_lhs).clone();
-                let rhs_ty = get_type(&typed_rhs).clone();
-                if matches!(
-                    op,
-                    BinaryOperator::Remainder
-                        | BinaryOperator::BitAnd
-                        | BinaryOperator::BitOr
-                        | BinaryOperator::BitXOr
-                        | BinaryOperator::ShiftLeft
-                        | BinaryOperator::ShiftRight
-                ) && (lhs_ty == Type::Double || rhs_ty == Type::Double)
-                {
-                    return Err(CompileError::Check(format!(
-                        "invalid operation {:?} with double",
-                        op,
-                    )));
-                }
+                let left_ty = get_type(&typed_lhs);
+                let right_ty = get_type(&typed_rhs);
 
-                if matches!(
-                    op,
-                    BinaryOperator::BitAnd
-                        | BinaryOperator::BitOr
-                        | BinaryOperator::BitXOr
-                        | BinaryOperator::ShiftLeft
-                        | BinaryOperator::ShiftRight
-                        | BinaryOperator::Divide
-                        | BinaryOperator::Multiply
-                        | BinaryOperator::Remainder
-                ) && (is_pointer_type(&lhs_ty) || is_pointer_type(&rhs_ty))
-                {
-                    return Err(CompileError::Check(format!(
-                        "invalid operation {op:?} with pointer",
-                    )));
-                }
+                let common_ty = if is_pointer_type(left_ty) || is_pointer_type(right_ty) {
+                    get_common_pointer_type(&typed_lhs, &typed_rhs)?
+                } else {
+                    get_common_type(left_ty, right_ty)?
+                };
 
-                // Mixed-type binary op rules:
-                // 1. Convert both operands to their common type.
-                //    1a. Unless it's a bitshift, for some reason?
-                // 2. Do the binary operation.
-                // 3. Convert the result to the LHS type.
-                // The cast() function takes care of checking to see
-                // if inserting a Cast expression is actually necessary.
-                let common_type =
-                    if matches!(op, BinaryOperator::ShiftLeft | BinaryOperator::ShiftRight) {
-                        lhs_ty.clone()
-                    } else {
-                        get_common_type(&lhs_ty, &rhs_ty)?
-                    };
-                let cast_lhs = cast(typed_lhs.clone(), &common_type);
-                let cast_rhs = cast(typed_rhs, &common_type);
-                let binary_operation = TypedExpression::Binary(
-                    common_type,
-                    op,
-                    Box::new(cast_lhs),
+                check_double_binop(binop, &common_ty)?;
+                check_pointer_binop(binop, &common_ty)?;
+
+                let cast_rhs = cast(typed_rhs.clone(), &common_ty);
+
+                TypedExpression::Compound(
+                    left_ty.clone(),
+                    binop,
+                    Box::new(typed_lhs),
                     Box::new(cast_rhs),
-                );
-
-                let rhs_expr = cast(binary_operation, &lhs_ty);
-                TypedExpression::Assign(lhs_ty, Box::new(typed_lhs), Box::new(rhs_expr))
+                )
             }
             Expression::Crement(fixity, crement, expr) => {
                 let typed_expr = self.check_expr(*expr)?;
@@ -868,6 +794,7 @@ pub fn get_type(expr: &TypedExpression) -> &Type {
         TypedExpression::Var(ty, _) => ty,
         TypedExpression::AddrOf(ty, _) => ty,
         TypedExpression::Deref(ty, _) => ty,
+        TypedExpression::Compound(ty, _, _, _) => ty,
     }
 }
 
@@ -880,6 +807,47 @@ fn const_type(c: &Const) -> Type {
         Const::UInt(_) => Type::UInt,
         Const::ULong(_) => Type::ULong,
         Const::Double(_) => Type::Double,
+    }
+}
+
+fn check_double_binop(binop: BinaryOperator, ty: &Type) -> Result<(), CompileError> {
+    if matches!(
+        binop,
+        BinaryOperator::Remainder
+            | BinaryOperator::BitAnd
+            | BinaryOperator::BitOr
+            | BinaryOperator::BitXOr
+            | BinaryOperator::ShiftLeft
+            | BinaryOperator::ShiftRight
+    ) && *ty == Type::Double
+    {
+        Err(CompileError::Check(format!(
+            "invalid operation {:?} with double",
+            binop,
+        )))
+    } else {
+        Ok(())
+    }
+}
+
+fn check_pointer_binop(binop: BinaryOperator, ty: &Type) -> Result<(), CompileError> {
+    if matches!(
+        binop,
+        BinaryOperator::BitAnd
+            | BinaryOperator::BitOr
+            | BinaryOperator::BitXOr
+            | BinaryOperator::ShiftLeft
+            | BinaryOperator::ShiftRight
+            | BinaryOperator::Divide
+            | BinaryOperator::Multiply
+            | BinaryOperator::Remainder
+    ) && is_pointer_type(ty)
+    {
+        Err(CompileError::Check(format!(
+            "invalid operation {binop:?} with pointer",
+        )))
+    } else {
+        Ok(())
     }
 }
 
@@ -902,7 +870,7 @@ pub fn signed(t: &Type) -> bool {
 
 // Return the usual arithmetic conversion for ensuring expressions
 // involving two types have the right result.
-fn get_common_type(t1: &Type, t2: &Type) -> Result<Type, CompileError> {
+pub fn get_common_type(t1: &Type, t2: &Type) -> Result<Type, CompileError> {
     if t1 == t2 {
         return Ok(t1.clone());
     }

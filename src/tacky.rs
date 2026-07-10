@@ -5,7 +5,9 @@ use crate::ast::{
     Program, Statement, Type, UnaryOperator, Var,
 };
 use crate::interner::{Interner, Symbol};
-use crate::typecheck::{Attrs, InitValue, StaticInit, TypedExpression, get_type, signed, size};
+use crate::typecheck::{
+    Attrs, InitValue, StaticInit, TypedExpression, get_common_type, get_type, signed, size,
+};
 
 #[derive(Debug, PartialEq, Clone, Copy)]
 pub enum UnaryOp {
@@ -108,12 +110,12 @@ pub enum Instr {
         dst: Val,
     },
     Load {
-        src: Val,
+        ptr: Val,
         dst: Val,
     },
     Store {
         src: Val,
-        dst: Val,
+        ptr: Val,
     },
 }
 
@@ -521,10 +523,63 @@ impl<'a> TackifyState<'a> {
 
                 ExpResult::PlainOperand(dst)
             }
+            TypedExpression::Compound(_ty, binop, lhs, rhs) => {
+                let lhs_ty = get_type(&lhs).clone();
+                let rhs_ty = get_type(&rhs).clone();
+
+                // Bitshifts don't get a common type; they maintain the type of the LHS
+                let common_ty = if matches!(
+                    binop,
+                    BinaryOperator::ShiftLeft | BinaryOperator::ShiftRight
+                ) {
+                    lhs_ty.clone()
+                } else {
+                    get_common_type(&lhs_ty, &rhs_ty).unwrap()
+                };
+
+                let lval = self.tackify_expr(*lhs, instrs);
+                let rval = self.tackify_and_convert(*rhs, instrs);
+
+                let op = Self::convert_binop(binop);
+
+                match lval {
+                    ExpResult::DereferencedPointer(ptr) => {
+                        let tmp_src = self.new_var(lhs_ty.clone(), "compound_lhs");
+                        let tmp_dst = self.new_var(common_ty.clone(), "compound_rhs");
+                        instrs.push(Instr::Load { ptr, dst: tmp_src });
+                        let cast_src = self.cast(tmp_src, common_ty.clone(), &lhs_ty, instrs);
+                        instrs.push(Instr::Binary {
+                            binop: op,
+                            src1: cast_src,
+                            src2: rval,
+                            dst: tmp_dst,
+                        });
+                        let result = self.cast(tmp_dst, lhs_ty, &common_ty, instrs);
+                        instrs.push(Instr::Store { src: result, ptr });
+                        ExpResult::DereferencedPointer(ptr)
+                    }
+                    ExpResult::PlainOperand(obj) => {
+                        let cast_obj = self.cast(obj, common_ty.clone(), &lhs_ty, instrs);
+                        let tmp_dst = self.new_var(common_ty, "compound_binop");
+                        instrs.push(Instr::Binary {
+                            binop: op,
+                            src1: cast_obj,
+                            src2: rval,
+                            dst: tmp_dst,
+                        });
+                        let result = self.cast(tmp_dst, lhs_ty, &rhs_ty, instrs);
+                        instrs.push(Instr::Copy {
+                            src: result,
+                            dst: obj,
+                        });
+                        ExpResult::PlainOperand(obj)
+                    }
+                }
+            }
             TypedExpression::Var(_ty, id) => ExpResult::PlainOperand(Val::Var(id)),
             TypedExpression::Assign(_ty, lhs, expr) => {
-                let rval = self.tackify_and_convert(*expr, instrs);
                 let lval = self.tackify_expr(*lhs, instrs);
+                let rval = self.tackify_and_convert(*expr, instrs);
 
                 match lval {
                     ExpResult::PlainOperand(obj) => {
@@ -535,10 +590,7 @@ impl<'a> TackifyState<'a> {
                         lval
                     }
                     ExpResult::DereferencedPointer(ptr) => {
-                        instrs.push(Instr::Store {
-                            src: rval,
-                            dst: ptr,
-                        });
+                        instrs.push(Instr::Store { src: rval, ptr });
                         ExpResult::PlainOperand(rval)
                     }
                 }
@@ -551,22 +603,52 @@ impl<'a> TackifyState<'a> {
                 } else {
                     "dec"
                 };
-                let tmp_dst = self.new_var(ty, name);
+                let tmp_dst = self.new_var(ty.clone(), name);
+                let tmp_src = self.new_var(ty, name);
 
-                let src = self.tackify_and_convert(*expr, instrs);
+                let lval = self.tackify_expr(*expr, instrs);
 
-                instrs.extend(vec![
-                    Instr::Copy { src, dst: tmp_dst },
-                    Instr::Binary {
-                        binop: op,
-                        src1: tmp_dst,
-                        src2: Val::Constant(Const::Int(1)),
-                        dst: src,
-                    },
-                ]);
+                match lval {
+                    ExpResult::PlainOperand(obj) => {
+                        instrs.extend(vec![
+                            Instr::Copy {
+                                src: obj,
+                                dst: tmp_dst,
+                            },
+                            Instr::Binary {
+                                binop: op,
+                                src1: tmp_dst,
+                                src2: Val::Constant(Const::Int(1)),
+                                dst: obj,
+                            },
+                        ]);
+                        let result = if fixity == Fixity::Pre { obj } else { tmp_dst };
+                        ExpResult::PlainOperand(result)
+                    }
+                    ExpResult::DereferencedPointer(ptr) => {
+                        instrs.extend(vec![
+                            // load value
+                            Instr::Load { ptr, dst: tmp_src },
+                            // inc/decrement it
+                            Instr::Binary {
+                                binop: op,
+                                src1: tmp_src,
+                                src2: Val::Constant(Const::Int(1)),
+                                dst: tmp_dst,
+                            },
+                            // store the value back to the pointer
+                            Instr::Store { src: tmp_dst, ptr },
+                        ]);
 
-                let result = if fixity == Fixity::Pre { src } else { tmp_dst };
-                ExpResult::PlainOperand(result)
+                        let result = if fixity == Fixity::Pre {
+                            tmp_dst
+                        } else {
+                            tmp_src
+                        };
+
+                        ExpResult::PlainOperand(result)
+                    }
+                }
             }
             TypedExpression::Conditional(ty, cond_expr, if_expr, else_expr) => {
                 let cond_expr = self.tackify_and_convert(*cond_expr, instrs);
@@ -609,50 +691,15 @@ impl<'a> TackifyState<'a> {
             TypedExpression::Cast(ty, expr) => {
                 let src = self.tackify_and_convert(*expr.clone(), instrs);
                 let expr_type = get_type(&expr);
-                if ty == *expr_type {
-                    return ExpResult::PlainOperand(src);
-                }
-                let dst = self.new_var(ty.clone(), "cast");
 
-                // unwrap is safe because we have passed typechecking
-                // and there can be no function types here
-                let expr_size = size(expr_type).unwrap();
-                let cast_size = size(&ty).unwrap();
-
-                match (expr_type, ty) {
-                    (Type::Double, Type::Int | Type::Long) => {
-                        instrs.push(Instr::DoubleToInt { src, dst })
-                    }
-                    (Type::Double, Type::UInt | Type::ULong) => {
-                        instrs.push(Instr::DoubleToUInt { src, dst })
-                    }
-                    (Type::Int | Type::Long, Type::Double) => {
-                        instrs.push(Instr::IntToDouble { src, dst })
-                    }
-                    (Type::UInt | Type::ULong, Type::Double) => {
-                        instrs.push(Instr::UIntToDouble { src, dst })
-                    }
-                    _ => {
-                        if cast_size == expr_size {
-                            instrs.push(Instr::Copy { src, dst })
-                        } else if cast_size < expr_size {
-                            instrs.push(Instr::Truncate { src, dst })
-                        } else if signed(expr_type) {
-                            instrs.push(Instr::SignExtend { src, dst });
-                        } else {
-                            instrs.push(Instr::ZeroExtend { src, dst });
-                        }
-                    }
-                }
-
-                ExpResult::PlainOperand(dst)
+                ExpResult::PlainOperand(self.cast(src, ty, expr_type, instrs))
             }
             TypedExpression::AddrOf(_ty, expr) => {
                 let ty = get_type(&expr).clone();
                 let v = self.tackify_expr(*expr, instrs);
                 match v {
                     ExpResult::PlainOperand(obj) => {
-                        let dst = self.new_var(ty, "addr_of");
+                        let dst = self.new_var(Type::Pointer(Box::new(ty)), "addr_of");
                         instrs.push(Instr::GetAddress { src: obj, dst });
                         ExpResult::PlainOperand(dst)
                     }
@@ -673,10 +720,45 @@ impl<'a> TackifyState<'a> {
             ExpResult::PlainOperand(val) => val,
             ExpResult::DereferencedPointer(ptr) => {
                 let dst = self.new_var(ty, "ptr_deref");
-                instrs.push(Instr::Load { src: ptr, dst });
+                instrs.push(Instr::Load { ptr, dst });
                 dst
             }
         }
+    }
+
+    fn cast(&mut self, src: Val, to_ty: Type, expr_type: &Type, instrs: &mut Vec<Instr>) -> Val {
+        if to_ty == *expr_type {
+            return src;
+        }
+        let dst = self.new_var(to_ty.clone(), "cast");
+
+        // unwrap is safe because we have passed typechecking
+        // and there can be no function types here
+        let expr_size = size(expr_type).unwrap();
+        let cast_size = size(&to_ty).unwrap();
+
+        match (expr_type, to_ty) {
+            (Type::Double, Type::Int | Type::Long) => instrs.push(Instr::DoubleToInt { src, dst }),
+            (Type::Double, Type::UInt | Type::ULong) => {
+                instrs.push(Instr::DoubleToUInt { src, dst })
+            }
+            (Type::Int | Type::Long, Type::Double) => instrs.push(Instr::IntToDouble { src, dst }),
+            (Type::UInt | Type::ULong, Type::Double) => {
+                instrs.push(Instr::UIntToDouble { src, dst })
+            }
+            _ => {
+                if cast_size == expr_size {
+                    instrs.push(Instr::Copy { src, dst })
+                } else if cast_size < expr_size {
+                    instrs.push(Instr::Truncate { src, dst })
+                } else if signed(expr_type) {
+                    instrs.push(Instr::SignExtend { src, dst });
+                } else {
+                    instrs.push(Instr::ZeroExtend { src, dst });
+                }
+            }
+        }
+        dst
     }
 
     fn new_temp(&mut self, var_name: &'static str) -> Symbol {

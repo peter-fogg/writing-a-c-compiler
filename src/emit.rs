@@ -308,6 +308,14 @@ fn emit_instr(
             )
             .as_bytes(),
         )?,
+        Instr::Lea { src, dst } => file.write_all(
+            format!(
+                "\tleaq\t{}, {}\n",
+                write_operand(src, 8, interner, symbols),
+                write_operand(dst, 8, interner, symbols)
+            )
+            .as_bytes(),
+        )?,
     }
     Ok(())
 }
@@ -384,7 +392,7 @@ fn write_operand(
     match op {
         Operand::Reg(reg) => write_register(reg, bytes),
         Operand::Imm(n) => format!("${}", n),
-        Operand::Stack(offset) => format!("{}(%rbp)", offset),
+        Operand::Memory(reg, offset) => format!("{offset}({})", write_register(reg, 8)),
         Operand::Pseudo(s) => panic!("Pseudo operand {} not replaced", s),
         Operand::Data(var) => {
             format!(
@@ -404,6 +412,7 @@ fn write_register(reg: Register, bytes: u8) -> String {
         }
         Register::DI | Register::SI => write_i_register(reg, bytes),
         Register::SP => String::from("%rsp"),
+        Register::BP => String::from("%rbp"),
         Register::XMM0
         | Register::XMM1
         | Register::XMM2

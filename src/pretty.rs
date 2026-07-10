@@ -247,7 +247,7 @@ impl<'a> InternerDisplay<'a> for Expression {
                 format!("Cast({:?}, {})", ty, expr.display(interner))
             }
             Expression::Compound(binop, lhs, rhs) => format!(
-                "{:?}({}, {})",
+                "{:?}Compound({}, {})",
                 binop,
                 lhs.display(interner),
                 rhs.display(interner)
@@ -273,6 +273,12 @@ impl<'a> InternerDisplay<'a> for TypedExpression {
                     rhs.display(interner)
                 )
             }
+            TypedExpression::Compound(ty, binop, lhs, rhs) => format!(
+                "{:?}Compound({ty:?}, {}, {})",
+                binop,
+                lhs.display(interner),
+                rhs.display(interner)
+            ),
             TypedExpression::Crement(_, fix, crement, expr) => {
                 format!("{:?}({:?}, {})", fix, crement, expr.display(interner))
             }
