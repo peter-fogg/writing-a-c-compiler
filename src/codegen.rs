@@ -1092,6 +1092,9 @@ impl<'a> AssembleState<'a> {
                         Instr::Label(end),
                     ]);
                 }
+                tacky::Instr::GetAddress { .. } => todo!(),
+                tacky::Instr::Load { .. } => todo!(),
+                tacky::Instr::Store { .. } => todo!(),
             }
         }
         assembly
