@@ -15,5 +15,5 @@ I'm working through Nora Sandler's Writing a C Compiler in Rust. Goals are:
 
 - Have a nice time I guess?
 
-The project is through chapter 13 (doubles) along with all the extra
+The project is through chapter 14 (pointers) along with all the extra
  credit as of early June 2026.
