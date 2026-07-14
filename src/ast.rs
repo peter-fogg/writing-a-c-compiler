@@ -79,6 +79,13 @@ pub enum Expression {
     Cast(Type, Box<Expression>),
     Deref(Box<Expression>),
     AddrOf(Box<Expression>),
+    Subscript(Box<Expression>, Box<Expression>),
+}
+
+#[derive(Debug, PartialEq, Clone)]
+pub enum Initializer<E> {
+    Single(E),
+    Compound(Vec<Initializer<E>>),
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -139,12 +146,13 @@ pub enum Type {
     Double,
     Fun(Vec<Type>, Box<Type>),
     Pointer(Box<Type>),
+    Array(Box<Type>, u32),
 }
 
 #[derive(Debug, PartialEq, Clone)]
 pub struct Var<E> {
     pub name: Symbol,
-    pub init: Option<E>,
+    pub init: Option<Initializer<E>>,
     pub storage: Option<StorageClass>,
     pub ty: Type,
 }

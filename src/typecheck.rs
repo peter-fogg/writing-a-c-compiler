@@ -299,9 +299,10 @@ impl<'a> TypeChecker<'a> {
         }: Var<Expression>,
     ) -> Result<Var<TypedExpression>, CompileError> {
         let mut init_attr = match init {
-            Some(Expression::Constant(const_init)) => {
-                InitValue::Initial(cast_init(const_init, &ty)?)
-            }
+            // todo!()
+            // Some(Expression::Constant(const_init)) => {
+            //     InitValue::Initial(cast_init(const_init, &ty)?)
+            // }
             None => {
                 if storage == Some(StorageClass::Extern) {
                     InitValue::NoInit
@@ -367,7 +368,8 @@ impl<'a> TypeChecker<'a> {
             ),
         );
         let typed_init = match init {
-            Some(expr) => Some(self.check_expr(expr)?),
+            // Some(expr) => Some(self.check_expr(expr)?),
+            Some(_) => todo!(),
             None => None,
         };
         Ok(Var {
@@ -398,7 +400,8 @@ impl<'a> TypeChecker<'a> {
                 // Typecheck the init expr if it exists and convert it to the appropriate type
 
                 let typed_init = match init {
-                    Some(expr) => Some(convert_by_assignment(self.check_expr(expr)?, &ty)?),
+                    // Some(expr) => Some(convert_by_assignment(self.check_expr(expr)?, &ty)?),
+                    Some(_) => todo!(),
                     None => None,
                 };
 
@@ -444,7 +447,8 @@ impl<'a> TypeChecker<'a> {
                         Type::Pointer(_) => StaticInit::ULong(0),
                         _ => StaticInit::Int(0),
                     },
-                    Some(Expression::Constant(n)) => cast_init(n, &ty)?,
+                    // todo!()
+                    // Some(Expression::Constant(n)) => cast_init(n, &ty)?,
                     _ => {
                         return Err(CompileError::Check(format!(
                             "Non-constant initialization of variable {}",
@@ -464,7 +468,8 @@ impl<'a> TypeChecker<'a> {
                     ),
                 );
                 let typed_init = match init {
-                    Some(expr) => Some(self.check_expr(expr)?),
+                    // Some(expr) => Some(self.check_expr(expr)?),
+                    Some(_) => todo!(),
                     None => None,
                 };
                 Ok(Var {
@@ -747,6 +752,7 @@ impl<'a> TypeChecker<'a> {
                     )));
                 }
             }
+            Expression::Subscript(_, _) => todo!(),
         })
     }
 }
@@ -861,6 +867,7 @@ pub fn size(t: &Type) -> Result<u8, CompileError> {
                 "Can't get size of a function type",
             )));
         }
+        Type::Array(_, _) => todo!(),
     })
 }
 
@@ -985,6 +992,7 @@ fn convert_case(expr: &Const, ty: &Type) -> Const {
         Type::Double => unreachable!("double in case expression"),
         Type::Fun(_, _) => unreachable!("function type in case expression"),
         Type::Pointer(_) => unreachable!("pointer type in case expression"),
+        Type::Array(_, _) => unreachable!("array type in case expression"),
     }
 }
 

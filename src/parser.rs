@@ -9,14 +9,15 @@ use crate::lexer::{Lexer, Token, TokenKind};
 enum Declarator {
     Ident(Symbol),
     Pointer(Box<Declarator>),
+    Array(Box<Declarator>, u32),
     Fun(Vec<Param>, Box<Declarator>),
 }
 
-// This is a funny way to encode the natural numbers
 #[derive(Debug, PartialEq, Clone)]
 enum AbstractDeclarator {
     Pointer(Box<AbstractDeclarator>),
-    AbstractBase,
+    Array(Box<AbstractDeclarator>, u32),
+    Base,
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -168,7 +169,7 @@ impl<'a> Parser<'a> {
         let init = match self.current().kind {
             TokenKind::Equals => {
                 self.consume(TokenKind::Equals)?;
-                Some(self.expression(Prec::Bottom)?)
+                Some(self.initializer()?)
             }
             TokenKind::Semicolon => None,
             kind => {
@@ -183,6 +184,35 @@ impl<'a> Parser<'a> {
             storage,
             ty,
         })
+    }
+
+    fn initializer(&mut self) -> ParseResult<Initializer<Expression>> {
+        match self.current().kind {
+            TokenKind::LBrace => {
+                self.consume(TokenKind::LBrace)?;
+
+                let mut inits = vec![];
+
+                inits.push(self.initializer()?);
+
+                while self.current().kind == TokenKind::Comma {
+                    self.consume(TokenKind::Comma)?;
+                    if self.current().kind == TokenKind::RBrace {
+                        break;
+                    }
+                    inits.push(self.initializer()?);
+                }
+                // // Consume trailing comma if it's there
+                // if self.current().kind == TokenKind::Comma {
+                //     let _ = self.consume(TokenKind::Comma);
+                // }
+
+                self.consume(TokenKind::RBrace)?;
+
+                Ok(Initializer::Compound(inits))
+            }
+            _ => Ok(Initializer::Single(self.expression(Prec::Bottom)?)),
+        }
     }
 
     // Either an identifier or a parenthesized declarator
@@ -228,8 +258,36 @@ impl<'a> Parser<'a> {
             self.consume(TokenKind::RParen)?;
 
             return Ok(Declarator::Fun(params, Box::new(simple)));
+        } else if matches!(self.current().kind, TokenKind::LSquare) {
+            let mut declarator = simple;
+            while matches!(self.current().kind, TokenKind::LSquare) {
+                self.consume(TokenKind::LSquare)?;
+
+                let size = self.array_size()?;
+
+                self.consume(TokenKind::RSquare)?;
+                declarator = Declarator::Array(Box::new(declarator), size);
+            }
+            return Ok(declarator);
         }
         Ok(simple)
+    }
+
+    fn array_size(&mut self) -> ParseResult<u32> {
+        let c = self.constant()?;
+        let size = match c {
+            Expression::Constant(Const::Double(n)) => {
+                return Err(
+                    self.report_error(format!("Can't use double constant {n} as array dimension"))
+                );
+            }
+            Expression::Constant(Const::Int(n)) => n as u32,
+            Expression::Constant(Const::UInt(n)) => n,
+            Expression::Constant(Const::Long(n)) => n as u32,
+            Expression::Constant(Const::ULong(n)) => n as u32,
+            expr => return Err(self.report_error(format!("Bad array size {expr:?}"))),
+        };
+        Ok(size)
     }
 
     fn declarator(&mut self) -> ParseResult<Declarator> {
@@ -247,17 +305,55 @@ impl<'a> Parser<'a> {
         match self.current().kind {
             TokenKind::Star => {
                 self.consume(TokenKind::Star)?;
-                let declarator = self.abstract_declarator()?;
+
+                let declarator = if self.current().kind == TokenKind::Star {
+                    self.abstract_declarator()?
+                } else {
+                    self.direct_abstract_declarator()?
+                };
                 Ok(AbstractDeclarator::Pointer(Box::new(declarator)))
             }
+            _ => self.direct_abstract_declarator(),
+        }
+    }
+
+    fn direct_abstract_declarator(&mut self) -> ParseResult<AbstractDeclarator> {
+        match self.current().kind {
             TokenKind::LParen => {
                 self.consume(TokenKind::LParen)?;
 
-                let declarator = self.abstract_declarator()?;
+                let mut declarator = self.abstract_declarator()?;
                 self.consume(TokenKind::RParen)?;
+                while self.current().kind == TokenKind::LSquare {
+                    self.consume(TokenKind::LSquare)?;
+
+                    let size = self.array_size()?;
+
+                    self.consume(TokenKind::RSquare)?;
+                    declarator = AbstractDeclarator::Array(Box::new(declarator), size);
+                }
                 Ok(declarator)
             }
-            _ => Ok(AbstractDeclarator::AbstractBase),
+            TokenKind::LSquare => {
+                self.consume(TokenKind::LSquare)?;
+
+                let size = self.array_size()?;
+
+                self.consume(TokenKind::RSquare)?;
+
+                let mut declarator =
+                    AbstractDeclarator::Array(Box::new(AbstractDeclarator::Base), size);
+                while self.current().kind == TokenKind::LSquare {
+                    self.consume(TokenKind::LSquare)?;
+
+                    let size = self.array_size()?;
+
+                    self.consume(TokenKind::RSquare)?;
+                    declarator = AbstractDeclarator::Array(Box::new(declarator), size);
+                }
+                Ok(declarator)
+            }
+            _ => Ok(AbstractDeclarator::Base),
         }
     }
 
@@ -367,6 +463,10 @@ impl<'a> Parser<'a> {
                 let derived_type = Type::Pointer(Box::new(base_type));
                 self.process_declarator(*d, derived_type)
             }
+            Declarator::Array(d, size) => {
+                let derived_type = Type::Array(Box::new(base_type), size);
+                self.process_declarator(*d, derived_type)
+            }
             Declarator::Fun(params, d) => {
                 if let Declarator::Ident(name) = *d {
                     let mut param_names = Vec::with_capacity(params.len());
@@ -397,10 +497,14 @@ impl<'a> Parser<'a> {
 
     fn process_abstract_declarator(declarator: AbstractDeclarator, base_type: Type) -> Type {
         match declarator {
-            AbstractDeclarator::AbstractBase => base_type,
+            AbstractDeclarator::Base => base_type,
             AbstractDeclarator::Pointer(declarator) => {
                 Self::process_abstract_declarator(*declarator, Type::Pointer(Box::new(base_type)))
             }
+            AbstractDeclarator::Array(declarator, size) => Self::process_abstract_declarator(
+                *declarator,
+                Type::Array(Box::new(base_type), size),
+            ),
         }
     }
 
@@ -697,6 +801,12 @@ impl<'a> Parser<'a> {
                         self.consume(TokenKind::DoubleMinus)?;
                         lhs = Expression::Crement(Fixity::Post, Crement::Dec, Box::new(lhs));
                     }
+                    TokenKind::LSquare => {
+                        self.consume(TokenKind::LSquare)?;
+                        let subscript = self.expression(Prec::Bottom)?;
+                        self.consume(TokenKind::RSquare)?;
+                        lhs = Expression::Subscript(Box::new(lhs), Box::new(subscript))
+                    }
                     _ => (),
                 }
             } else {
@@ -731,7 +841,10 @@ impl<'a> Parser<'a> {
     }
 
     fn is_postfix_op(token: &Token) -> bool {
-        matches!(&token.kind, TokenKind::DoublePlus | TokenKind::DoubleMinus)
+        matches!(
+            &token.kind,
+            TokenKind::DoublePlus | TokenKind::DoubleMinus | TokenKind::LSquare
+        )
     }
 
     fn is_compound_op(token: &Token) -> bool {
@@ -788,8 +901,10 @@ impl<'a> Parser<'a> {
                 if Self::is_type_specifier(self.current()) {
                     let base_ty = self.type_specifier()?;
                     let abstract_declarator = self.abstract_declarator()?;
+                    println!("{abstract_declarator:?}");
                     self.consume(TokenKind::RParen)?;
                     let ty = Self::process_abstract_declarator(abstract_declarator, base_ty);
+                    println!("{ty:?}");
                     let expr = self.expression(Prec::Postfix)?;
                     Expression::Cast(ty, Box::new(expr))
                 } else {

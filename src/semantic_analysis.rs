@@ -103,10 +103,10 @@ impl ResolveState<'_> {
             };
             self.put_env(name, res_info);
 
-            let init = init.map(|exp| self.expression(exp));
+            // let init = init.map(|exp| self.expression(exp));
             Var {
                 name: new_name,
-                init,
+                init: todo!(),
                 storage,
                 ty,
             }
@@ -329,6 +329,7 @@ impl ResolveState<'_> {
             Expression::AddrOf(expr) => Expression::AddrOf(Box::new(self.expression(*expr))),
 
             Expression::Deref(expr) => Expression::Deref(Box::new(self.expression(*expr))),
+            Expression::Subscript(_, _) => todo!(),
         }
     }
 

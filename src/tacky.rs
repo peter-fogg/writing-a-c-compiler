@@ -248,21 +248,26 @@ impl<'a> TackifyState<'a> {
         }
     }
 
-    fn tackify_declaration(&mut self, decl: Declaration<TypedExpression>, instrs: &mut Vec<Instr>) {
+    fn tackify_declaration(
+        &mut self,
+        decl: Declaration<TypedExpression>,
+        _instrs: &mut Vec<Instr>,
+    ) {
         match decl {
             Declaration::Var(Var {
-                name,
-                init,
+                name: _,
+                init: _,
                 storage: None,
                 ty: _,
             }) => {
-                if let Some(expr) = init {
-                    let expr = self.tackify_and_convert(expr, instrs);
-                    instrs.push(Instr::Copy {
-                        src: expr,
-                        dst: Val::Var(name),
-                    });
-                }
+                // if let Some(expr) = init {
+                //     let expr = self.tackify_and_convert(expr, instrs);
+                //     instrs.push(Instr::Copy {
+                //         src: expr,
+                //         dst: Val::Var(name),
+                //     });
+                // }
+                todo!()
             }
             Declaration::Var(_) => (),
             Declaration::Func(_) => (),

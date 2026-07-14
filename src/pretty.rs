@@ -181,7 +181,7 @@ impl<'a> Pretty<'a> {
         &self,
         Var {
             name,
-            init,
+            init: _,
             storage,
             ty,
         }: &Var<E>,
@@ -193,9 +193,10 @@ impl<'a> Pretty<'a> {
             storage_str(storage),
             ty,
             self.interner.get_symbol(*name),
-            init.as_ref()
-                .map(|expr| expr.display(self.interner))
-                .unwrap_or("".to_string())
+            "todo!()",
+            // init.as_ref()
+            //     .map(|expr| expr.display(self.interner))
+            //     .unwrap_or("".to_string())
         )
     }
 }
@@ -254,6 +255,11 @@ impl<'a> InternerDisplay<'a> for Expression {
             ),
             Expression::AddrOf(expr) => format!("AddrOf({})", expr.display(interner)),
             Expression::Deref(expr) => format!("Deref({})", expr.display(interner)),
+            Expression::Subscript(e1, e2) => format!(
+                "Subscript({}, {})",
+                e1.display(interner),
+                e2.display(interner)
+            ),
         }
     }
 }

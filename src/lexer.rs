@@ -13,6 +13,8 @@ pub enum TokenKind<'a> {
     RParen,
     LBrace,
     RBrace,
+    LSquare,
+    RSquare,
     Return,
     Constant(&'a str),
     LongConstant(&'a str),
@@ -451,6 +453,23 @@ impl<'a> Iterator for Lexer<'a> {
                 '}' => {
                     return Some(Ok(Token {
                         kind: TokenKind::RBrace,
+                        start,
+                        end: start + 1,
+                        line: self.line,
+                    }));
+                }
+
+                '[' => {
+                    return Some(Ok(Token {
+                        kind: TokenKind::LSquare,
+                        start,
+                        end: start + 1,
+                        line: self.line,
+                    }));
+                }
+                ']' => {
+                    return Some(Ok(Token {
+                        kind: TokenKind::RSquare,
                         start,
                         end: start + 1,
                         line: self.line,
