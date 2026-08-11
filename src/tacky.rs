@@ -189,10 +189,10 @@ impl<'a> TackifyState<'a> {
         for (name, (ty, attrs)) in self.symbols.iter() {
             if let Attrs::Static { init, global } = attrs {
                 match init {
-                    InitValue::Initial(n) => program.push(StaticVar {
+                    InitValue::Initial(_n) => program.push(StaticVar {
                         name: *name,
                         global: *global,
-                        init: *n,
+                        init: todo!(), //*n,
                         ty: ty.clone(),
                     }),
                     InitValue::Tentative => program.push(StaticVar {
@@ -715,6 +715,7 @@ impl<'a> TackifyState<'a> {
                 let result = self.tackify_and_convert(*expr, instrs);
                 ExpResult::DereferencedPointer(result)
             }
+            TypedExpression::Subscript(_, _, _) => todo!(),
         }
     }
 

@@ -1,5 +1,8 @@
+use std::iter::once;
+
 use crate::ast::{
-    BlockItem, Declaration, Expression, ForInit, Function, Program, Statement, StorageClass, Var,
+    BlockItem, Declaration, Expression, ForInit, Function, Initializer, Program, Statement,
+    StorageClass, Var,
 };
 use crate::interner::Interner;
 use crate::typecheck::TypedExpression;
@@ -181,7 +184,7 @@ impl<'a> Pretty<'a> {
         &self,
         Var {
             name,
-            init: _,
+            init,
             storage,
             ty,
         }: &Var<E>,
@@ -193,11 +196,20 @@ impl<'a> Pretty<'a> {
             storage_str(storage),
             ty,
             self.interner.get_symbol(*name),
-            "todo!()",
-            // init.as_ref()
-            //     .map(|expr| expr.display(self.interner))
-            //     .unwrap_or("".to_string())
+            init.as_ref()
+                .map(|i| self.initializer(i))
+                .unwrap_or("".to_string())
         )
+    }
+
+    fn initializer<E: InternerDisplay<'a>>(&self, init: &Initializer<E>) -> String {
+        match init {
+            Initializer::Single(expr) => expr.display(self.interner),
+            Initializer::Compound(inits) => once("{".to_string())
+                .chain(inits.iter().map(|i| self.initializer(i) + ", "))
+                .chain(once("}".to_string()))
+                .collect::<String>(),
+        }
     }
 }
 
@@ -319,6 +331,14 @@ impl<'a> InternerDisplay<'a> for TypedExpression {
             }
             TypedExpression::Deref(ty, expr) => {
                 format!("Deref({:?}, {})", ty, expr.display(interner))
+            }
+            TypedExpression::Subscript(ty, e1, e2) => {
+                format!(
+                    "Subscript({:?}, {}, {})",
+                    ty,
+                    e1.display(interner),
+                    e2.display(interner)
+                )
             }
         }
     }

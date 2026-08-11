@@ -2,8 +2,8 @@ use std::collections::{HashMap, HashSet};
 
 use crate::CompileError;
 use crate::ast::{
-    BlockItem, CaseInfo, Const, Declaration, Expression, ForInit, Function, Program, Statement,
-    StorageClass, Var,
+    BlockItem, CaseInfo, Const, Declaration, Expression, ForInit, Function, Initializer, Program,
+    Statement, StorageClass, Var,
 };
 use crate::interner::{Interner, Symbol};
 use crate::typecheck::{CheckResult, TypeChecker, is_lvalue};
@@ -103,12 +103,21 @@ impl ResolveState<'_> {
             };
             self.put_env(name, res_info);
 
-            // let init = init.map(|exp| self.expression(exp));
+            let init = init.map(|i| self.initializer(i));
             Var {
                 name: new_name,
-                init: todo!(),
+                init,
                 storage,
                 ty,
+            }
+        }
+    }
+
+    fn initializer(&mut self, init: Initializer<Expression>) -> Initializer<Expression> {
+        match init {
+            Initializer::Single(expr) => Initializer::Single(self.expression(expr)),
+            Initializer::Compound(inits) => {
+                Initializer::Compound(inits.into_iter().map(|i| self.initializer(i)).collect())
             }
         }
     }
@@ -262,16 +271,10 @@ impl ResolveState<'_> {
 
     pub fn expression(&mut self, expr: Expression) -> Expression {
         match expr {
-            Expression::Assign(lhs, rhs) => {
-                if is_lvalue(&lhs) {
-                    Expression::Assign(
-                        Box::new(self.expression(*lhs)),
-                        Box::new(self.expression(*rhs)),
-                    )
-                } else {
-                    panic!("Assignment to non-lvalue {:?}", lhs);
-                }
-            }
+            Expression::Assign(lhs, rhs) => Expression::Assign(
+                Box::new(self.expression(*lhs)),
+                Box::new(self.expression(*rhs)),
+            ),
             Expression::Var(id) => {
                 if let Some(ResolutionInfo { name, .. }) = self.get_env(&id) {
                     Expression::Var(*name)
@@ -329,7 +332,10 @@ impl ResolveState<'_> {
             Expression::AddrOf(expr) => Expression::AddrOf(Box::new(self.expression(*expr))),
 
             Expression::Deref(expr) => Expression::Deref(Box::new(self.expression(*expr))),
-            Expression::Subscript(_, _) => todo!(),
+            Expression::Subscript(e1, e2) => Expression::Subscript(
+                Box::new(self.expression(*e1)),
+                Box::new(self.expression(*e2)),
+            ),
         }
     }
 

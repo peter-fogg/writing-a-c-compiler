@@ -761,7 +761,7 @@ impl<'a> Parser<'a> {
             | TokenKind::RAngle => Prec::Comparison,
             TokenKind::DoubleAmpersand => Prec::And,
             TokenKind::DoublePipe => Prec::Or,
-            TokenKind::DoublePlus | TokenKind::DoubleMinus => Prec::Postfix,
+            TokenKind::DoublePlus | TokenKind::DoubleMinus | TokenKind::LSquare => Prec::Postfix,
             _ => Prec::Bottom,
         }
     }
@@ -960,7 +960,7 @@ impl<'a> Parser<'a> {
                     _ => unreachable!(),
                 };
                 self.advance()?;
-                let inner_expr = self.factor()?;
+                let inner_expr = self.expression(Prec::Unary)?;
                 Expression::Crement(Fixity::Pre, crement, Box::new(inner_expr))
             }
             t => return Err(self.report_error(format!("Unexpected token {:?}", t))),

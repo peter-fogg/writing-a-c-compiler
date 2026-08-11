@@ -121,6 +121,7 @@ fn format_static_init(init: StaticInit) -> String {
         StaticInit::Long(n) => format!(".quad {n}"),
         StaticInit::ULong(n) => format!(".quad {n}"),
         StaticInit::Double(n) => format!(".quad {:#x} # {n}", n.to_bits()),
+        StaticInit::Zero(_bytes) => todo!(),
     }
 }
 
