@@ -56,21 +56,24 @@ fn emit_top_level(
             if global {
                 file.write_all(format!("\t.globl _{}\n", interner.get_symbol(name)).as_bytes())?;
             }
-            if matches!(
-                init,
-                StaticInit::Int(0)
-                    | StaticInit::Long(0)
-                    | StaticInit::UInt(0)
-                    | StaticInit::ULong(0)
-            ) {
-                file.write_all("\t.bss\n".as_bytes())?;
-            } else {
-                // Nonzero integer or any double
-                file.write_all("\t.data\n".as_bytes())?;
+            for initializer in init {
+                if matches!(
+                    initializer,
+                    StaticInit::Int(0)
+                        | StaticInit::Long(0)
+                        | StaticInit::UInt(0)
+                        | StaticInit::ULong(0)
+                ) {
+                    file.write_all("\t.bss\n".as_bytes())?;
+                } else {
+                    // Nonzero integer or any double
+                    file.write_all("\t.data\n".as_bytes())?;
+                }
+
+                file.write_all(format!("\t.balign {alignment}\n").as_bytes())?;
+                file.write_all(format!("_{}:\n", interner.get_symbol(name)).as_bytes())?;
+                file.write_all(format!("\t{}\n", format_static_init(initializer)).as_bytes())?;
             }
-            file.write_all(format!("\t.balign {alignment}\n").as_bytes())?;
-            file.write_all(format!("_{}:\n", interner.get_symbol(name)).as_bytes())?;
-            file.write_all(format!("\t{}\n", format_static_init(init)).as_bytes())?;
         }
         AsmTopLevel::StaticConst {
             name,
@@ -121,7 +124,7 @@ fn format_static_init(init: StaticInit) -> String {
         StaticInit::Long(n) => format!(".quad {n}"),
         StaticInit::ULong(n) => format!(".quad {n}"),
         StaticInit::Double(n) => format!(".quad {:#x} # {n}", n.to_bits()),
-        StaticInit::Zero(_bytes) => todo!(),
+        StaticInit::Zero(n) => format!(".zero {n}"),
     }
 }
 
@@ -223,7 +226,7 @@ fn emit_instr(
         )?,
         Instr::Cdq(AsmType::Longword) => file.write_all("\tcdq\n".as_bytes())?,
         Instr::Cdq(AsmType::Quadword) => file.write_all("\tcqo\n".as_bytes())?,
-        Instr::Cdq(AsmType::Double) => unreachable!(),
+        Instr::Cdq(AsmType::Double | AsmType::ByteArray { .. }) => unreachable!(),
         Instr::Cmp {
             ty: AsmType::Double,
             lhs,
@@ -326,6 +329,7 @@ fn bytes(ty: AsmType) -> u8 {
         AsmType::Longword => 4,
         AsmType::Quadword => 8,
         AsmType::Double => 8,
+        AsmType::ByteArray { .. } => todo!(),
     }
 }
 
@@ -363,6 +367,7 @@ fn type_suffix(ty: AsmType) -> &'static str {
         AsmType::Longword => "l",
         AsmType::Quadword => "q",
         AsmType::Double => "sd",
+        AsmType::ByteArray { .. } => todo!(),
     }
 }
 
@@ -402,6 +407,8 @@ fn write_operand(
                 interner.get_symbol(var)
             )
         }
+        Operand::Indexed(_, _, _) => todo!(),
+        Operand::PseudoMem(_, _) => todo!(),
     }
 }
 

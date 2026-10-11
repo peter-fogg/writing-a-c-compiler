@@ -636,7 +636,7 @@ impl<'a> TypeChecker<'a> {
                     let cast_rhs = cast(typed_rhs, &ty);
                     TypedExpression::Binary(
                         ty,
-                        BinaryOperator::Subtract,
+                        BinaryOperator::Add,
                         Box::new(cast_lhs),
                         Box::new(cast_rhs),
                     )
@@ -653,8 +653,12 @@ impl<'a> TypeChecker<'a> {
                     TypedExpression::Binary(
                         right_type.clone(),
                         BinaryOperator::Add,
-                        Box::new(cast_lhs),
+                        // NOTE: switching the RHS and LHS here makes
+                        // it easier to generate TACKY since we know
+                        // that any pointer addition has the pointer
+                        // on the LHS and the integer on the RHS
                         Box::new(typed_rhs),
+                        Box::new(cast_lhs),
                     )
                 } else {
                     return Err(CompileError::Check(format!(
@@ -961,7 +965,7 @@ fn is_arithmetic_type(ty: &Type) -> bool {
     )
 }
 
-fn is_pointer_type(ty: &Type) -> bool {
+pub fn is_pointer_type(ty: &Type) -> bool {
     matches!(ty, Type::Pointer(_))
 }
 
@@ -1259,7 +1263,7 @@ fn is_integral(const_init: &Const) -> bool {
     !matches!(const_init, Const::Double(_))
 }
 
-fn is_integral_type(ty: &Type) -> bool {
+pub fn is_integral_type(ty: &Type) -> bool {
     matches!(ty, Type::Int | Type::Long | Type::UInt | Type::ULong)
 }
 

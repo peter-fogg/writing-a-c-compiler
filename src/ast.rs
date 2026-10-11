@@ -53,6 +53,25 @@ pub enum Const {
     Double(f64),
 }
 
+impl Const {
+    pub fn is_integral(&self) -> bool {
+        matches!(
+            self,
+            Const::Int(_) | Const::Long(_) | Const::UInt(_) | Const::ULong(_)
+        )
+    }
+
+    pub fn as_u64(&self) -> u64 {
+        match self {
+            Const::Int(n) => *n as u64,
+            Const::UInt(n) => *n as u64,
+            Const::Long(n) => *n as u64,
+            Const::ULong(n) => *n as u64,
+            Const::Double(n) => *n as u64,
+        }
+    }
+}
+
 impl Display for Const {
     fn fmt(&self, f: &mut Formatter) -> Result<(), Error> {
         match self {

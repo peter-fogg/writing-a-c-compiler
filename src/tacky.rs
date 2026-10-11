@@ -2,11 +2,12 @@ use std::collections::HashMap;
 
 use crate::ast::{
     BinaryOperator, BlockItem, CaseInfo, Const, Crement, Declaration, Fixity, ForInit, Function,
-    Program, Statement, Type, UnaryOperator, Var,
+    Initializer, Program, Statement, Type, UnaryOperator, Var,
 };
 use crate::interner::{Interner, Symbol};
 use crate::typecheck::{
-    Attrs, InitValue, StaticInit, TypedExpression, get_common_type, get_type, signed, size,
+    Attrs, InitValue, StaticInit, TypedExpression, get_common_type, get_type, is_integral_type,
+    is_pointer_type, signed, size,
 };
 
 #[derive(Debug, PartialEq, Clone, Copy)]
@@ -117,6 +118,17 @@ pub enum Instr {
         src: Val,
         ptr: Val,
     },
+    AddPtr {
+        ptr: Val,
+        index: Val,
+        scale: u32,
+        dst: Val,
+    },
+    CopyToOffset {
+        src: Val,
+        dst: Symbol,
+        offset: u32,
+    },
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -131,7 +143,7 @@ pub enum TopLevel {
         name: Symbol,
         global: bool,
         ty: Type,
-        init: StaticInit,
+        init: Vec<StaticInit>,
     },
 }
 use TopLevel::*;
@@ -189,19 +201,21 @@ impl<'a> TackifyState<'a> {
         for (name, (ty, attrs)) in self.symbols.iter() {
             if let Attrs::Static { init, global } = attrs {
                 match init {
-                    InitValue::Initial(_n) => program.push(StaticVar {
+                    InitValue::Initial(n) => program.push(StaticVar {
                         name: *name,
                         global: *global,
-                        init: todo!(), //*n,
+                        init: n.clone(),
                         ty: ty.clone(),
                     }),
                     InitValue::Tentative => program.push(StaticVar {
                         name: *name,
                         global: *global,
-                        init: if *ty == Type::Long {
-                            StaticInit::Long(0)
-                        } else {
-                            StaticInit::Int(0)
+                        init: match ty {
+                            Type::Array(elem_ty, sze) => {
+                                vec![StaticInit::Zero(size(elem_ty).unwrap() * sze)]
+                            }
+                            Type::Long => vec![StaticInit::Long(0)],
+                            _ => vec![StaticInit::Int(0)],
                         },
                         ty: ty.clone(),
                     }),
@@ -248,29 +262,61 @@ impl<'a> TackifyState<'a> {
         }
     }
 
-    fn tackify_declaration(
-        &mut self,
-        decl: Declaration<TypedExpression>,
-        _instrs: &mut Vec<Instr>,
-    ) {
+    fn tackify_declaration(&mut self, decl: Declaration<TypedExpression>, instrs: &mut Vec<Instr>) {
         match decl {
             Declaration::Var(Var {
-                name: _,
-                init: _,
+                name,
+                init,
                 storage: None,
-                ty: _,
-            }) => {
-                // if let Some(expr) = init {
-                //     let expr = self.tackify_and_convert(expr, instrs);
-                //     instrs.push(Instr::Copy {
-                //         src: expr,
-                //         dst: Val::Var(name),
-                //     });
-                // }
-                todo!()
-            }
+                ty,
+            }) => match init {
+                Some(Initializer::Single(expr)) => {
+                    let expr = self.tackify_and_convert(expr, instrs);
+                    instrs.push(Instr::Copy {
+                        src: expr,
+                        dst: Val::Var(name),
+                    });
+                }
+                Some(compound) => {
+                    let Type::Array(elem_ty, _) = ty else {
+                        unreachable!()
+                    };
+                    let elem_size = size(&elem_ty).unwrap();
+                    self.tackify_compound_initializer(compound, name, elem_size, 0, instrs);
+                }
+                None => (),
+            },
             Declaration::Var(_) => (),
             Declaration::Func(_) => (),
+        }
+    }
+
+    fn tackify_compound_initializer(
+        &mut self,
+        init: Initializer<TypedExpression>,
+        name: Symbol,
+        size: u32,
+        offset: u32,
+        instrs: &mut Vec<Instr>,
+    ) -> u32 {
+        match init {
+            Initializer::Single(expr) => {
+                let expr = self.tackify_and_convert(expr, instrs);
+                instrs.push(Instr::CopyToOffset {
+                    src: expr,
+                    offset,
+                    dst: name,
+                });
+                offset
+            }
+            Initializer::Compound(inits) => {
+                let mut result_offset = offset;
+                for init in inits {
+                    self.tackify_compound_initializer(init, name, size, result_offset, instrs);
+                    result_offset += size;
+                }
+                result_offset
+            }
         }
     }
 
@@ -510,6 +556,79 @@ impl<'a> TackifyState<'a> {
 
                 ExpResult::PlainOperand(ret_val)
             }
+            TypedExpression::Binary(
+                ref ty @ Type::Pointer(ref ref_ty),
+                BinaryOperator::Add,
+                ptr,
+                rhs,
+            ) if is_integral_type(get_type(&rhs)) => {
+                let ptr = self.tackify_and_convert(*ptr, instrs);
+                let rhs = self.tackify_and_convert(*rhs, instrs);
+
+                ExpResult::PlainOperand(self.tackify_pointer_add(ty, ref_ty, ptr, rhs, instrs))
+            }
+            TypedExpression::Binary(
+                ref ty @ Type::Pointer(ref ref_ty),
+                BinaryOperator::Subtract,
+                ptr,
+                rhs,
+            ) if is_integral_type(get_type(&rhs)) => {
+                let neg_dst = self.new_var(get_type(&rhs).clone(), "ptr_sub_negate");
+                let dst = self.new_var(ty.clone(), "ptr_sub_int");
+
+                let ptr = self.tackify_and_convert(*ptr, instrs);
+                let rhs = self.tackify_and_convert(*rhs, instrs);
+
+                // unwrap is safe because we have passed typechecking and there can be no function types here
+                let scale = size(&ref_ty).unwrap();
+
+                instrs.extend(vec![
+                    Instr::Unary {
+                        unop: UnaryOp::Negate,
+                        src: rhs,
+                        dst: neg_dst,
+                    },
+                    Instr::AddPtr {
+                        ptr,
+                        index: neg_dst,
+                        scale,
+                        dst,
+                    },
+                ]);
+
+                ExpResult::PlainOperand(dst)
+            }
+            TypedExpression::Binary(
+                ref ty @ Type::Pointer(ref ref_ty),
+                BinaryOperator::Subtract,
+                ptr1,
+                ptr2,
+            ) if is_pointer_type(get_type(&ptr1)) && is_pointer_type(get_type(&ptr2)) => {
+                let ptr1 = self.tackify_and_convert(*ptr1, instrs);
+                let ptr2 = self.tackify_and_convert(*ptr2, instrs);
+
+                let sub_dst = self.new_var(ty.clone(), "ptr_sub_ptr");
+                let div_dst = self.new_var(ty.clone(), "ptr_sub_div");
+
+                let size = size(&ref_ty).unwrap();
+
+                instrs.extend(vec![
+                    Instr::Binary {
+                        binop: BinaryOp::Subtract,
+                        src1: ptr1,
+                        src2: ptr2,
+                        dst: sub_dst,
+                    },
+                    Instr::Binary {
+                        binop: BinaryOp::Divide,
+                        src1: sub_dst,
+                        src2: Val::Constant(Const::UInt(size)),
+                        dst: div_dst,
+                    },
+                ]);
+
+                ExpResult::PlainOperand(div_dst)
+            }
             TypedExpression::Binary(ty, binop, lhs, rhs) => {
                 let src1 = self.tackify_and_convert(*lhs, instrs);
                 let src2 = self.tackify_and_convert(*rhs, instrs);
@@ -527,6 +646,9 @@ impl<'a> TackifyState<'a> {
                 instrs.push(new_binop);
 
                 ExpResult::PlainOperand(dst)
+            }
+            TypedExpression::Compound(Type::Pointer(_), _, _, _) => {
+                todo!()
             }
             TypedExpression::Compound(_ty, binop, lhs, rhs) => {
                 let lhs_ty = get_type(&lhs).clone();
@@ -715,7 +837,24 @@ impl<'a> TackifyState<'a> {
                 let result = self.tackify_and_convert(*expr, instrs);
                 ExpResult::DereferencedPointer(result)
             }
-            TypedExpression::Subscript(_, _, _) => todo!(),
+            TypedExpression::Subscript(ty, ptr, index) => {
+                let ptr = self.tackify_and_convert(*ptr, instrs);
+                let index = self.tackify_and_convert(*index, instrs);
+
+                // unwrap is safe because we have passed typechecking and there can be no function types here
+                let scale = size(&ty).unwrap();
+
+                let dst = self.new_var(ty, "subscript");
+
+                instrs.push(Instr::AddPtr {
+                    ptr,
+                    index,
+                    scale,
+                    dst,
+                });
+
+                ExpResult::DereferencedPointer(dst)
+            }
         }
     }
 
@@ -730,6 +869,29 @@ impl<'a> TackifyState<'a> {
                 dst
             }
         }
+    }
+
+    fn tackify_pointer_add(
+        &mut self,
+        ptr_ty: &Type,
+        ref_ty: &Type,
+        ptr: Val,
+        rhs: Val,
+        instrs: &mut Vec<Instr>,
+    ) -> Val {
+        // unwrap is safe because we have passed typechecking and there can be no function types here
+        let scale = size(&ref_ty).unwrap();
+
+        let dst = self.new_var(ptr_ty.clone(), "ptr_add");
+
+        instrs.push(Instr::AddPtr {
+            ptr,
+            index: rhs,
+            scale,
+            dst,
+        });
+
+        dst
     }
 
     fn cast(&mut self, src: Val, to_ty: Type, expr_type: &Type, instrs: &mut Vec<Instr>) -> Val {
