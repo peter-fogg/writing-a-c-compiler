@@ -1202,13 +1202,13 @@ fn convert_case(expr: &Const, ty: &Type) -> Const {
 
 fn cast_init(init: &Initializer<Expression>, ty: &Type) -> Result<Vec<StaticInit>, CompileError> {
     match (ty, init) {
-        (Type::Array(elem_type, size), Initializer::Compound(inits)) => {
-            let size = *size as usize;
-            let mut new_inits = Vec::with_capacity(size);
+        (Type::Array(elem_type, sze), Initializer::Compound(inits)) => {
+            let sze = *sze as usize;
+            let mut new_inits = Vec::with_capacity(sze);
             for init in inits {
                 new_inits.extend(cast_init(init, elem_type)?);
             }
-            let padding = size - inits.len();
+            let padding = (sze - inits.len()) * (size(elem_type)? as usize);
             if padding > 0 {
                 new_inits.push(StaticInit::Zero(padding as u32));
             }

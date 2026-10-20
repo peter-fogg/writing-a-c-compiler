@@ -602,19 +602,18 @@ impl<'a> TackifyState<'a> {
 
                 ExpResult::PlainOperand(dst)
             }
-            TypedExpression::Binary(
-                ref ty @ Type::Pointer(ref ref_ty),
-                BinaryOperator::Subtract,
-                ptr1,
-                ptr2,
-            ) if is_pointer_type(get_type(&ptr1)) && is_pointer_type(get_type(&ptr2)) => {
+            TypedExpression::Binary(ref ty, BinaryOperator::Subtract, ptr1, ptr2)
+                if is_pointer_type(get_type(&ptr1)) && is_pointer_type(get_type(&ptr2)) =>
+            {
+                let size = match get_type(&ptr1) {
+                    Type::Pointer(ref_ty) => size(ref_ty).unwrap(),
+                    _ => unreachable!(),
+                };
                 let ptr1 = self.tackify_and_convert(*ptr1, instrs);
                 let ptr2 = self.tackify_and_convert(*ptr2, instrs);
 
                 let sub_dst = self.new_var(ty.clone(), "ptr_sub_ptr");
                 let div_dst = self.new_var(ty.clone(), "ptr_sub_div");
-
-                let size = size(&ref_ty).unwrap();
 
                 instrs.extend(vec![
                     Instr::Binary {
@@ -634,6 +633,15 @@ impl<'a> TackifyState<'a> {
                 ExpResult::PlainOperand(div_dst)
             }
             TypedExpression::Binary(ty, binop, lhs, rhs) => {
+                if binop == BinaryOperator::Subtract {
+                    println!(
+                        "{lhs:?}, {rhs:?}, {:?} {:?} {}{} {ty:?}",
+                        get_type(&lhs),
+                        get_type(&rhs),
+                        is_pointer_type(get_type(&lhs)),
+                        is_pointer_type(get_type(&rhs)),
+                    );
+                }
                 let src1 = self.tackify_and_convert(*lhs, instrs);
                 let src2 = self.tackify_and_convert(*rhs, instrs);
                 let dst = self.new_var(ty, "binop");
