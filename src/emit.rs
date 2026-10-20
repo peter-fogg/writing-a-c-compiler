@@ -56,22 +56,25 @@ fn emit_top_level(
             if global {
                 file.write_all(format!("\t.globl _{}\n", interner.get_symbol(name)).as_bytes())?;
             }
-            for initializer in init {
-                if matches!(
-                    initializer,
+            if init.len() == 1
+                && matches!(
+                    init[0],
                     StaticInit::Int(0)
                         | StaticInit::Long(0)
                         | StaticInit::UInt(0)
                         | StaticInit::ULong(0)
-                ) {
-                    file.write_all("\t.bss\n".as_bytes())?;
-                } else {
-                    // Nonzero integer or any double
-                    file.write_all("\t.data\n".as_bytes())?;
-                }
+                        | StaticInit::Zero(_)
+                )
+            {
+                file.write_all("\t.bss\n".as_bytes())?;
+            } else {
+                // Nonzero integer or any double
+                file.write_all("\t.data\n".as_bytes())?;
+            }
 
-                file.write_all(format!("\t.balign {alignment}\n").as_bytes())?;
-                file.write_all(format!("_{}:\n", interner.get_symbol(name)).as_bytes())?;
+            file.write_all(format!("\t.balign {alignment}\n").as_bytes())?;
+            file.write_all(format!("_{}:\n", interner.get_symbol(name)).as_bytes())?;
+            for initializer in init {
                 file.write_all(format!("\t{}\n", format_static_init(initializer)).as_bytes())?;
             }
         }
@@ -329,7 +332,7 @@ fn bytes(ty: AsmType) -> u8 {
         AsmType::Longword => 4,
         AsmType::Quadword => 8,
         AsmType::Double => 8,
-        AsmType::ByteArray { .. } => todo!(),
+        AsmType::ByteArray { .. } => 8, // TODO check this
     }
 }
 
@@ -367,7 +370,7 @@ fn type_suffix(ty: AsmType) -> &'static str {
         AsmType::Longword => "l",
         AsmType::Quadword => "q",
         AsmType::Double => "sd",
-        AsmType::ByteArray { .. } => todo!(),
+        AsmType::ByteArray { .. } => "", // TODO check this
     }
 }
 
@@ -400,6 +403,7 @@ fn write_operand(
         Operand::Imm(n) => format!("${}", n),
         Operand::Memory(reg, offset) => format!("{offset}({})", write_register(reg, 8)),
         Operand::Pseudo(s) => panic!("Pseudo operand {} not replaced", s),
+        Operand::PseudoMem(s, _) => panic!("Pseudo operand {} not replaced", s),
         Operand::Data(var) => {
             format!(
                 "{}_{}(%rip)",
@@ -407,8 +411,11 @@ fn write_operand(
                 interner.get_symbol(var)
             )
         }
-        Operand::Indexed(_, _, _) => todo!(),
-        Operand::PseudoMem(_, _) => todo!(),
+        Operand::Indexed(reg1, reg2, offset) => format!(
+            "({}, {}, {offset})",
+            write_register(reg1, 8),
+            write_register(reg2, 8)
+        ),
     }
 }
 

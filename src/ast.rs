@@ -168,6 +168,12 @@ pub enum Type {
     Array(Box<Type>, u32),
 }
 
+impl Type {
+    pub fn is_pointer(&self) -> bool {
+        matches!(self, Type::Pointer(_))
+    }
+}
+
 #[derive(Debug, PartialEq, Clone)]
 pub struct Var<E> {
     pub name: Symbol,

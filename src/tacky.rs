@@ -7,7 +7,7 @@ use crate::ast::{
 use crate::interner::{Interner, Symbol};
 use crate::typecheck::{
     Attrs, InitValue, StaticInit, TypedExpression, get_common_type, get_type, is_integral_type,
-    is_pointer_type, signed, size,
+    is_pointer_type, scalar_size, signed, size,
 };
 
 #[derive(Debug, PartialEq, Clone, Copy)]
@@ -278,10 +278,7 @@ impl<'a> TackifyState<'a> {
                     });
                 }
                 Some(compound) => {
-                    let Type::Array(elem_ty, _) = ty else {
-                        unreachable!()
-                    };
-                    let elem_size = size(&elem_ty).unwrap();
+                    let elem_size = scalar_size(&ty).unwrap(); // Get the size of leaf array element type
                     self.tackify_compound_initializer(compound, name, elem_size, 0, instrs);
                 }
                 None => (),
@@ -291,11 +288,13 @@ impl<'a> TackifyState<'a> {
         }
     }
 
+    // Calculate offsets for the elements of a compound
+    // initializer. Returns the number of bytes that were allocated
     fn tackify_compound_initializer(
         &mut self,
         init: Initializer<TypedExpression>,
         name: Symbol,
-        size: u32,
+        elem_size: u32,
         offset: u32,
         instrs: &mut Vec<Instr>,
     ) -> u32 {
@@ -307,15 +306,20 @@ impl<'a> TackifyState<'a> {
                     offset,
                     dst: name,
                 });
-                offset
+                elem_size
             }
             Initializer::Compound(inits) => {
                 let mut result_offset = offset;
                 for init in inits {
-                    self.tackify_compound_initializer(init, name, size, result_offset, instrs);
-                    result_offset += size;
+                    result_offset += self.tackify_compound_initializer(
+                        init,
+                        name,
+                        elem_size,
+                        result_offset,
+                        instrs,
+                    );
                 }
-                result_offset
+                result_offset - offset
             }
         }
     }
@@ -838,13 +842,19 @@ impl<'a> TackifyState<'a> {
                 ExpResult::DereferencedPointer(result)
             }
             TypedExpression::Subscript(ty, ptr, index) => {
+                // Figure out which one is the pointer and which is the index
+                let (ptr, index) = if get_type(&ptr).is_pointer() {
+                    (ptr, index)
+                } else {
+                    (index, ptr)
+                };
                 let ptr = self.tackify_and_convert(*ptr, instrs);
                 let index = self.tackify_and_convert(*index, instrs);
 
                 // unwrap is safe because we have passed typechecking and there can be no function types here
                 let scale = size(&ty).unwrap();
 
-                let dst = self.new_var(ty, "subscript");
+                let dst = self.new_var(Type::Long, "subscript"); // destination must have long type since it's a pointer
 
                 instrs.push(Instr::AddPtr {
                     ptr,

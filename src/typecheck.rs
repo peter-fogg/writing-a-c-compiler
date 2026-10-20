@@ -1067,6 +1067,14 @@ pub fn size(t: &Type) -> Result<u32, CompileError> {
     })
 }
 
+// Return size in bytes of the elements of an array, or just the size for scalar types
+pub fn scalar_size(t: &Type) -> Result<u32, CompileError> {
+    Ok(match t {
+        Type::Array(elem_ty, _) => scalar_size(elem_ty)?,
+        _ => size(t)?,
+    })
+}
+
 pub fn signed(t: &Type) -> bool {
     matches!(t, Type::Int | Type::Long)
 }

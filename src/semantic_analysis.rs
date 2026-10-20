@@ -376,6 +376,7 @@ pub fn analyze(
         count: 0,
         interner,
     };
+    let mut labeller = Labeller::new();
 
     for declaration in declarations {
         match declaration {
@@ -383,7 +384,8 @@ pub fn analyze(
                 let function = resolve_state.func_declaration(function, DeclScope::File);
 
                 check_labels(&function);
-                let mut function = label_loops(function, &mut *resolve_state.interner);
+                let mut function =
+                    label_loops(function, &mut labeller, &mut *resolve_state.interner);
                 let Function {
                     name: _,
                     body: ref mut block_items,
@@ -469,9 +471,8 @@ fn check_statement_label(
     }
 }
 
-struct Labeller<'a> {
+struct Labeller {
     count: u8,
-    interner: &'a mut Interner,
 }
 
 #[derive(Clone, Copy)]
@@ -492,24 +493,26 @@ fn label_loops(
         storage,
         ty,
     }: Function<Expression>,
+    labeller: &mut Labeller,
     interner: &mut Interner,
 ) -> Function<Expression> {
     Function {
         name,
-        body: body.map(|body| Labeller::new(interner).label_block(body, None, None, name)),
+        body: body.map(|body| labeller.label_block(interner, body, None, None, name)),
         params,
         storage,
         ty,
     }
 }
 
-impl<'a> Labeller<'a> {
-    fn new(interner: &'a mut Interner) -> Self {
-        Self { count: 0, interner }
+impl Labeller {
+    fn new() -> Self {
+        Self { count: 0 }
     }
 
     fn label_block(
         &mut self,
+        interner: &mut Interner,
         block_items: Vec<BlockItem<Expression>>,
         break_label: Option<Symbol>,
         continue_label: Option<Symbol>,
@@ -519,6 +522,7 @@ impl<'a> Labeller<'a> {
         for block_item in block_items {
             match block_item {
                 BlockItem::S(stmt) => labeled.push(BlockItem::S(self.label_statement(
+                    interner,
                     stmt,
                     break_label,
                     continue_label,
@@ -532,6 +536,7 @@ impl<'a> Labeller<'a> {
 
     fn label_statement(
         &mut self,
+        interner: &mut Interner,
         stmt: Statement<Expression>,
         break_label: Option<Symbol>,
         continue_label: Option<Symbol>,
@@ -544,18 +549,36 @@ impl<'a> Labeller<'a> {
              * Rename goto as format!("{}.{}", function_name, label) -- period is a valid identifier letter
              * Rename all labels in a function too?
              */
-            Statement::Goto(id) => Statement::Goto(self.uniquify_label(id, fn_name)),
+            Statement::Goto(id) => Statement::Goto(self.uniquify_label(interner, id, fn_name)),
 
             Statement::If(cond, if_stmt, else_stmt) => Statement::If(
                 cond,
-                Box::new(self.label_statement(*if_stmt, break_label, continue_label, fn_name)),
+                Box::new(self.label_statement(
+                    interner,
+                    *if_stmt,
+                    break_label,
+                    continue_label,
+                    fn_name,
+                )),
                 else_stmt.map(|stmt| {
-                    Box::new(self.label_statement(*stmt, break_label, continue_label, fn_name))
+                    Box::new(self.label_statement(
+                        interner,
+                        *stmt,
+                        break_label,
+                        continue_label,
+                        fn_name,
+                    ))
                 }),
             ),
             Statement::Label(id, stmt) => Statement::Label(
-                self.uniquify_label(id, fn_name),
-                Box::new(self.label_statement(*stmt, break_label, continue_label, fn_name)),
+                self.uniquify_label(interner, id, fn_name),
+                Box::new(self.label_statement(
+                    interner,
+                    *stmt,
+                    break_label,
+                    continue_label,
+                    fn_name,
+                )),
             ),
             Statement::Break(_) if break_label.is_none() => {
                 panic!("Break statement outside of loop or switch")
@@ -566,34 +589,55 @@ impl<'a> Labeller<'a> {
             }
             Statement::Continue(_) => Statement::Continue(continue_label.unwrap()),
             Statement::Compound(block_items) => Statement::Compound(self.label_block(
+                interner,
                 block_items,
                 break_label,
                 continue_label,
                 fn_name,
             )),
             Statement::While(_, cond, body) => {
-                let new_label = self.new_label(LabelType::While);
-                let body = self.label_statement(*body, Some(new_label), Some(new_label), fn_name);
+                let new_label = self.new_label(interner, LabelType::While);
+                let body = self.label_statement(
+                    interner,
+                    *body,
+                    Some(new_label),
+                    Some(new_label),
+                    fn_name,
+                );
                 Statement::While(new_label, cond, Box::new(body))
             }
             Statement::DoWhile(_, body, cond) => {
-                let new_label = self.new_label(LabelType::DoWhile);
-                let body = self.label_statement(*body, Some(new_label), Some(new_label), fn_name);
+                let new_label = self.new_label(interner, LabelType::DoWhile);
+                let body = self.label_statement(
+                    interner,
+                    *body,
+                    Some(new_label),
+                    Some(new_label),
+                    fn_name,
+                );
                 Statement::DoWhile(new_label, Box::new(body), cond)
             }
             Statement::For(_, init_decl, cond, post, body) => {
-                let new_label = self.new_label(LabelType::For);
-                let body = self.label_statement(*body, Some(new_label), Some(new_label), fn_name);
+                let new_label = self.new_label(interner, LabelType::For);
+                let body = self.label_statement(
+                    interner,
+                    *body,
+                    Some(new_label),
+                    Some(new_label),
+                    fn_name,
+                );
                 Statement::For(new_label, init_decl, cond, post, Box::new(body))
             }
             Statement::Case(_, expr, stmt) => {
-                let stmt = self.label_statement(*stmt, break_label, continue_label, fn_name);
-                let l = self.new_label(LabelType::Case);
+                let stmt =
+                    self.label_statement(interner, *stmt, break_label, continue_label, fn_name);
+                let l = self.new_label(interner, LabelType::Case);
                 Statement::Case(l, expr, Box::new(stmt))
             }
             Statement::Default(_, stmt) => {
-                let stmt = self.label_statement(*stmt, break_label, continue_label, fn_name);
-                let l = self.new_label(LabelType::Default);
+                let stmt =
+                    self.label_statement(interner, *stmt, break_label, continue_label, fn_name);
+                let l = self.new_label(interner, LabelType::Default);
                 Statement::Default(l, Box::new(stmt))
             }
             Statement::Switch {
@@ -602,9 +646,14 @@ impl<'a> Labeller<'a> {
                 body,
                 cases,
             } => {
-                let new_label = self.new_label(LabelType::Switch);
-                let body =
-                    Box::new(self.label_statement(*body, Some(new_label), continue_label, fn_name));
+                let new_label = self.new_label(interner, LabelType::Switch);
+                let body = Box::new(self.label_statement(
+                    interner,
+                    *body,
+                    Some(new_label),
+                    continue_label,
+                    fn_name,
+                ));
                 Statement::Switch {
                     label: new_label,
                     expr,
@@ -620,14 +669,14 @@ impl<'a> Labeller<'a> {
     // generated code they must be unique. Separate the function name
     // and the original label by a period, since this is guaranteed to
     // not be a valid identifier.
-    fn uniquify_label(&mut self, id: Symbol, fn_name: Symbol) -> Symbol {
-        let old_label = self.interner.get_symbol(id);
-        let fn_name = self.interner.get_symbol(fn_name);
+    fn uniquify_label(&mut self, interner: &mut Interner, id: Symbol, fn_name: Symbol) -> Symbol {
+        let old_label = interner.get_symbol(id);
+        let fn_name = interner.get_symbol(fn_name);
         let new_label = format!("{}.{}", fn_name, old_label);
-        self.interner.intern(new_label)
+        interner.intern(new_label)
     }
 
-    fn new_label(&mut self, label_type: LabelType) -> Symbol {
+    fn new_label(&mut self, interner: &mut Interner, label_type: LabelType) -> Symbol {
         self.count += 1;
         let label_str = match label_type {
             LabelType::For => "for",
@@ -638,8 +687,7 @@ impl<'a> Labeller<'a> {
             LabelType::Default => "default",
         };
 
-        self.interner
-            .intern(format!("{}_{}", label_str, self.count))
+        interner.intern(format!("{}_{}", label_str, self.count))
     }
 }
 

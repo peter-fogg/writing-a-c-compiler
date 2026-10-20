@@ -1505,7 +1505,7 @@ fn replace_op(op: Operand, state: &mut ReplaceState) -> Operand {
                     .entry(var)
                     .or_insert_with(|| allocate_space(ty, &mut state.max_offset));
 
-                Operand::Memory(Register::BP, -((*base_offset as i64) + offset as i64))
+                Operand::Memory(Register::BP, -((*base_offset as i64) - offset as i64))
             }
         }
         op => op,
