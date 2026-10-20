@@ -490,6 +490,9 @@ impl<'a> TypeChecker<'a> {
                     None => match ty {
                         Type::Long => vec![StaticInit::Long(0)],
                         Type::Pointer(_) => vec![StaticInit::ULong(0)],
+                        Type::Array(ref elem_ty, sze) => {
+                            vec![StaticInit::Zero(size(&elem_ty)? * sze)]
+                        }
                         _ => vec![StaticInit::Int(0)],
                     },
                     Some(ref expr) => cast_init(expr, &ty)?,
