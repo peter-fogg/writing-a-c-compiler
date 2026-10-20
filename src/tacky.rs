@@ -734,6 +734,28 @@ impl<'a> TackifyState<'a> {
                     }
                 }
             }
+            TypedExpression::Crement(ref ty @ Type::Pointer(ref ref_ty), fixity, crement, expr) => {
+                let ptr = self.tackify_and_convert(*expr, instrs);
+                let rhs = Val::Constant(Const::Long(if crement == Crement::Inc { 1 } else { -1 }));
+
+                let tmp_dst = self.new_var(ty.clone(), "ptr_inc");
+                instrs.push(Instr::Copy {
+                    src: ptr,
+                    dst: tmp_dst,
+                });
+
+                let result = self.tackify_pointer_add(ty, ref_ty, ptr, rhs, instrs);
+                instrs.push(Instr::Copy {
+                    src: result,
+                    dst: ptr,
+                });
+
+                if fixity == Fixity::Pre {
+                    ExpResult::PlainOperand(result)
+                } else {
+                    ExpResult::PlainOperand(tmp_dst)
+                }
+            }
             TypedExpression::Crement(ty, fixity, crement, expr) => {
                 let op = Self::convert_crement(crement);
 
