@@ -659,8 +659,25 @@ impl<'a> TackifyState<'a> {
 
                 ExpResult::PlainOperand(dst)
             }
-            TypedExpression::Compound(Type::Pointer(_), _, _, _) => {
-                todo!()
+            TypedExpression::Compound(ref ty @ Type::Pointer(ref ref_ty), binop, ptr, rhs) => {
+                let ptr = self.tackify_and_convert(*ptr, instrs);
+                let rhs = self.tackify_and_convert(*rhs, instrs);
+                if binop == BinaryOperator::Subtract {
+                    instrs.push(Instr::Unary {
+                        unop: UnaryOp::Negate,
+                        src: rhs,
+                        dst: rhs,
+                    });
+                }
+
+                // let tmp_dst = self.new_var(ty.clone(), "ptr_compound");
+                let result = self.tackify_pointer_add(ty, ref_ty, ptr, rhs, instrs);
+                instrs.push(Instr::Copy {
+                    src: result,
+                    dst: ptr,
+                });
+
+                ExpResult::PlainOperand(ptr)
             }
             TypedExpression::Compound(_ty, binop, lhs, rhs) => {
                 let lhs_ty = get_type(&lhs).clone();
