@@ -3,7 +3,6 @@
 // that this will be a good test for the parser.
 
 use std::collections::HashMap;
-use std::iter::repeat;
 
 use crate::CompileError;
 
@@ -334,7 +333,7 @@ impl<'a> TypeChecker<'a> {
                 let num_zeros = *size - (init_len as u32);
                 if num_zeros > 0 {
                     let zero = zero_initializer(elem_ty);
-                    typed_init_list.extend(repeat(zero).take(num_zeros as usize))
+                    typed_init_list.extend(std::iter::repeat_n(zero, num_zeros as usize))
                 }
 
                 Ok(Initializer::Compound(typed_init_list))
@@ -491,7 +490,7 @@ impl<'a> TypeChecker<'a> {
                         Type::Long => vec![StaticInit::Long(0)],
                         Type::Pointer(_) => vec![StaticInit::ULong(0)],
                         Type::Array(ref elem_ty, sze) => {
-                            vec![StaticInit::Zero(size(&elem_ty)? * sze)]
+                            vec![StaticInit::Zero(size(elem_ty)? * sze)]
                         }
                         _ => vec![StaticInit::Int(0)],
                     },
@@ -911,12 +910,12 @@ impl<'a> TypeChecker<'a> {
                 let ty2 = get_type(&typed_e2);
 
                 let ptr_ty = if let Type::Pointer(deref_ty) = ty1
-                    && is_integral_type(&ty2)
+                    && is_integral_type(ty2)
                 {
                     typed_e2 = cast(typed_e2, &Type::Long);
                     deref_ty
                 } else if let Type::Pointer(deref_ty) = ty2
-                    && is_integral_type(&ty1)
+                    && is_integral_type(ty1)
                 {
                     typed_e1 = cast(typed_e1, &Type::Long);
                     deref_ty
@@ -1292,7 +1291,7 @@ fn zero_initializer(ty: &Type) -> Initializer<TypedExpression> {
         }
         Type::Array(elem_ty, size) => {
             let init = zero_initializer(elem_ty);
-            Initializer::Compound(repeat(init).take(*size as usize).collect())
+            Initializer::Compound(std::iter::repeat_n(init, *size as usize).collect())
         }
         Type::Fun(_, _) => unreachable!(),
     }

@@ -66,7 +66,7 @@ impl Const {
             Const::Int(n) => *n as u64,
             Const::UInt(n) => *n as u64,
             Const::Long(n) => *n as u64,
-            Const::ULong(n) => *n as u64,
+            Const::ULong(n) => *n,
             Const::Double(n) => *n as u64,
         }
     }

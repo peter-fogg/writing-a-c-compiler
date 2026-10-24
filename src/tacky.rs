@@ -584,7 +584,7 @@ impl<'a> TackifyState<'a> {
                 let rhs = self.tackify_and_convert(*rhs, instrs);
 
                 // unwrap is safe because we have passed typechecking and there can be no function types here
-                let scale = size(&ref_ty).unwrap();
+                let scale = size(ref_ty).unwrap();
 
                 instrs.extend(vec![
                     Instr::Unary {
@@ -937,7 +937,7 @@ impl<'a> TackifyState<'a> {
         instrs: &mut Vec<Instr>,
     ) -> Val {
         // unwrap is safe because we have passed typechecking and there can be no function types here
-        let scale = size(&ref_ty).unwrap();
+        let scale = size(ref_ty).unwrap();
 
         let dst = self.new_var(ptr_ty.clone(), "ptr_add");
 
