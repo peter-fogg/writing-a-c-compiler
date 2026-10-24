@@ -800,6 +800,7 @@ impl<'a> TypeChecker<'a> {
                         Box::new(cast_rhs),
                     )
                 } else if is_pointer_type(left_ty) && is_integral_type(right_ty) {
+                    check_pointer_binop(binop, left_ty)?;
                     let cast_rhs = cast(typed_rhs, &Type::Long);
                     TypedExpression::Compound(
                         left_ty.clone(),

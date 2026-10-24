@@ -21,6 +21,8 @@ pub enum TokenKind<'a> {
     UnsignedConstant(&'a str),
     UnsignedLongConstant(&'a str),
     DoubleConstant(&'a str),
+    CharConstant(&'a str),
+    StringLiteral(&'a str),
     Double,
     Signed,
     Unsigned,
@@ -75,6 +77,7 @@ pub enum TokenKind<'a> {
     Static,
     Extern,
     Long,
+    Char,
 }
 
 #[derive(Debug, Clone, PartialEq, Copy)]
@@ -225,6 +228,7 @@ impl<'a> Lexer<'a> {
             "signed" => TokenKind::Signed,
             "unsigned" => TokenKind::Unsigned,
             "double" => TokenKind::Double,
+            "char" => TokenKind::Char,
             _ => TokenKind::Id(id),
         };
 
@@ -234,6 +238,78 @@ impl<'a> Lexer<'a> {
             end,
             line: self.line,
         }
+    }
+
+    fn is_valid_escape_char(c: char) -> bool {
+        matches!(
+            c,
+            'a' | 'b' | 'f' | 'n' | 'r' | 't' | 'v' | '?' | '\\' | '"' | '\''
+        )
+    }
+
+    pub fn string_literal(&mut self) -> Result<Token<'a>, CompileError> {
+        let (start, mut c) = self.next_char().unwrap();
+        while c != '\"' {
+            match c {
+                '\n' => return Err(CompileError::Lex(String::from("Newline in string literal"))),
+                '\\' => {
+                    let (_, c) = self.next_char().unwrap();
+                    if !Self::is_valid_escape_char(c) {
+                        return Err(CompileError::Lex(format!(
+                            "Bad escape sequence {c} in string literal"
+                        )));
+                    }
+                }
+                _ => (),
+            }
+            (_, c) = self.next_char().unwrap();
+        }
+        let (end_with_quote, _) = self.next_char().unwrap(); // Next character must be a quote
+        let end = end_with_quote - 1; // Don't include the quote in the string
+
+        Ok(Token {
+            kind: TokenKind::StringLiteral(self.source.get(start..end).unwrap()),
+            start,
+            end,
+            line: self.line,
+        })
+    }
+
+    pub fn character(&mut self) -> Result<Token<'a>, CompileError> {
+        let (start, c) = self.next_char().unwrap();
+        match c {
+            '\\' => {
+                let (_, c) = self.next_char().unwrap();
+                if !Self::is_valid_escape_char(c) {
+                    return Err(CompileError::Lex(format!(
+                        "Bad escape sequence {c} in character literal"
+                    )));
+                }
+            }
+            '\n' => {
+                return Err(CompileError::Lex(String::from(
+                    "Newline in character literal",
+                )));
+            }
+            '\'' => return Err(CompileError::Lex(String::from("Empty character literal"))),
+            _ => (),
+        };
+        let (end, c) = self.next_char().unwrap(); // Chomp remaing quote
+        match c {
+            '\'' => (),
+            _ => {
+                return Err(CompileError::Lex(format!(
+                    "Multiple characters in character literal {c}",
+                )));
+            }
+        }
+
+        Ok(Token {
+            kind: TokenKind::CharConstant(self.source.get(start..end).unwrap()),
+            start,
+            end,
+            line: self.line,
+        })
     }
 
     fn peek(&mut self) -> Option<&(usize, char)> {
@@ -299,6 +375,14 @@ impl<'a> Iterator for Lexer<'a> {
                     self.chomp_digits();
                     let number = self.double(start);
                     return Some(number);
+                }
+                '\'' => {
+                    let char = self.character();
+                    return Some(char);
+                }
+                '"' => {
+                    let literal = self.string_literal();
+                    return Some(literal);
                 }
                 c if Self::is_digit(c) => {
                     let number = self.constant();
