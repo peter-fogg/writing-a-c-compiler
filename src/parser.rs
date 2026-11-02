@@ -366,12 +366,7 @@ impl<'a> Parser<'a> {
         let mut types = vec![];
         for specifier in specifiers {
             match specifier.kind {
-                kind @ (TokenKind::Int
-                | TokenKind::Long
-                | TokenKind::Unsigned
-                | TokenKind::Signed
-                | TokenKind::Double
-                | TokenKind::Char) => types.push(kind),
+                kind if Self::is_type_specifier(specifier) => types.push(kind),
                 TokenKind::Static | TokenKind::Extern => storage_classes.push(specifier.kind),
                 _ => {
                     return Err(
@@ -456,15 +451,7 @@ impl<'a> Parser<'a> {
     fn type_specifier(&mut self) -> ParseResult<Type> {
         let mut types = vec![];
         while Self::is_type_specifier(self.current()) {
-            match self.current().kind {
-                kind @ (TokenKind::Int
-                | TokenKind::Long
-                | TokenKind::Unsigned
-                | TokenKind::Signed
-                | TokenKind::Double
-                | TokenKind::Char) => types.push(kind),
-                _ => unreachable!(),
-            }
+            types.push(self.current().kind);
             self.advance()?;
         }
         self.consolidate_type_specifier(types)
@@ -1110,17 +1097,7 @@ impl<'a> Parser<'a> {
     }
 
     fn is_specifier(t: Token<'a>) -> bool {
-        matches!(
-            t.kind,
-            TokenKind::Long
-                | TokenKind::Int
-                | TokenKind::Signed
-                | TokenKind::Unsigned
-                | TokenKind::Extern
-                | TokenKind::Static
-                | TokenKind::Double
-                | TokenKind::Char
-        )
+        matches!(t.kind, |TokenKind::Extern| TokenKind::Static) || Self::is_type_specifier(t)
     }
 
     fn is_type_specifier(t: Token<'a>) -> bool {
