@@ -928,6 +928,7 @@ impl<'a> TypeChecker<'a> {
 
                 TypedExpression::Subscript(*ptr_ty.clone(), Box::new(typed_e1), Box::new(typed_e2))
             }
+            Expression::Str(_) => todo!(),
         })
     }
 
@@ -1012,6 +1013,7 @@ fn const_type(c: &Const) -> Type {
         Const::UInt(_) => Type::UInt,
         Const::ULong(_) => Type::ULong,
         Const::Double(_) => Type::Double,
+        Const::Char(_) | Const::UChar(_) => todo!(),
     }
 }
 
@@ -1067,6 +1069,7 @@ pub fn size(t: &Type) -> Result<u32, CompileError> {
             )));
         }
         Type::Array(elem_ty, sze) => sze * size(elem_ty)?,
+        Type::Char | Type::SChar | Type::UChar => todo!(),
     })
 }
 
@@ -1200,6 +1203,7 @@ fn convert_case(expr: &Const, ty: &Type) -> Const {
         Type::Fun(_, _) => unreachable!("function type in case expression"),
         Type::Pointer(_) => unreachable!("pointer type in case expression"),
         Type::Array(_, _) => unreachable!("array type in case expression"),
+        Type::Char | Type::SChar | Type::UChar => todo!(),
     }
 }
 
@@ -1267,6 +1271,7 @@ fn u64_value(const_init: &Const) -> u64 {
         Const::UInt(n) => *n as u64,
         Const::ULong(n) => *n,
         Const::Double(n) => n.to_bits(),
+        Const::UChar(_) | Const::Char(_) => todo!(),
     }
 }
 
@@ -1295,5 +1300,6 @@ fn zero_initializer(ty: &Type) -> Initializer<TypedExpression> {
             Initializer::Compound(std::iter::repeat_n(init, *size as usize).collect())
         }
         Type::Fun(_, _) => unreachable!(),
+        Type::Char | Type::SChar | Type::UChar => todo!(),
     }
 }

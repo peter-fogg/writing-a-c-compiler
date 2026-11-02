@@ -249,6 +249,7 @@ impl<'a> Lexer<'a> {
 
     pub fn string_literal(&mut self) -> Result<Token<'a>, CompileError> {
         let (start, mut c) = self.next_char().unwrap();
+        let mut end = start;
         while c != '\"' {
             match c {
                 '\n' => return Err(CompileError::Lex(String::from("Newline in string literal"))),
@@ -262,10 +263,11 @@ impl<'a> Lexer<'a> {
                 }
                 _ => (),
             }
-            (_, c) = self.next_char().unwrap();
+            (end, c) = self.next_char().unwrap();
         }
-        let (end_with_quote, _) = self.next_char().unwrap(); // Next character must be a quote
-        let end = end_with_quote - 1; // Don't include the quote in the string
+        // let (end_with_quote, c) = self.next_char().unwrap(); // Next character must be a quote
+        // println!("{end_with_quote}, {c}");
+        // let end = end_with_quote - 1; // Don't include the quote in the string
 
         Ok(Token {
             kind: TokenKind::StringLiteral(self.source.get(start..end).unwrap()),

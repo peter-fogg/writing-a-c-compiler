@@ -221,6 +221,7 @@ impl<'a> InternerDisplay<'a> for Expression {
     fn display(&self, interner: &Interner) -> String {
         match self {
             Expression::Constant(n) => format!("{}", n),
+            Expression::Str(bytes) => format!("StringLit({})", String::from_utf8_lossy(bytes)),
             Expression::Unary(unop, expr) => format!("{:?}({})", unop, expr.display(interner)),
             Expression::Binary(binop, lhs, rhs) => {
                 format!(

@@ -258,6 +258,7 @@ fn alignment(ty: &Type) -> u8 {
                 alignment(elem_ty)
             }
         }
+        Type::Char | Type::SChar | Type::UChar => todo!(),
     }
 }
 
@@ -277,6 +278,7 @@ fn ty_asm_type(ty: &Type) -> AsmType {
                 alignment: alignment(ty),
             }
         }
+        Type::Char | Type::SChar | Type::UChar => todo!(),
     }
 }
 
@@ -287,6 +289,7 @@ fn const_type(constant: &Const) -> Type {
         Const::Long(_) => Type::Long,
         Const::UInt(_) => Type::UInt,
         Const::ULong(_) => Type::ULong,
+        Const::UChar(_) | Const::Char(_) => todo!(),
     }
 }
 
@@ -1239,6 +1242,7 @@ impl<'a> AssembleState<'a> {
                 let label = self.add_static_constant(n, 8);
                 Operand::Data(label)
             }
+            Val::Constant(_) => todo!(),
             Val::Var(s) if matches!(self.val_tacky_type(&val), Type::Array(_, _)) => {
                 Operand::PseudoMem(s, 0)
             }

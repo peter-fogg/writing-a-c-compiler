@@ -336,6 +336,7 @@ impl ResolveState<'_> {
                 Box::new(self.expression(*e1)),
                 Box::new(self.expression(*e2)),
             ),
+            Expression::Str(_) => todo!(),
         }
     }
 
@@ -713,6 +714,7 @@ pub fn actual_case_value(c: Const) -> u64 {
         Const::UInt(n) => n as u64,
         Const::ULong(n) => n,
         Const::Double(n) => n.to_bits(), // TODO: this seems sketch -- should it be a straight bitwise cast?
+        Const::Char(_) | Const::UChar(_) => todo!(),
     }
 }
 

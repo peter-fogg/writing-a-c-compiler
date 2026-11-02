@@ -51,13 +51,20 @@ pub enum Const {
     UInt(u32),
     ULong(u64),
     Double(f64),
+    Char(i8),
+    UChar(u8),
 }
 
 impl Const {
     pub fn is_integral(&self) -> bool {
         matches!(
             self,
-            Const::Int(_) | Const::Long(_) | Const::UInt(_) | Const::ULong(_)
+            Const::Int(_)
+                | Const::Long(_)
+                | Const::UInt(_)
+                | Const::ULong(_)
+                | Const::Char(_)
+                | Const::UChar(_)
         )
     }
 
@@ -68,6 +75,8 @@ impl Const {
             Const::Long(n) => *n as u64,
             Const::ULong(n) => *n,
             Const::Double(n) => *n as u64,
+            Const::Char(n) => *n as u64,
+            Const::UChar(n) => *n as u64,
         }
     }
 }
@@ -80,6 +89,8 @@ impl Display for Const {
             Const::UInt(n) => write!(f, "{}", n),
             Const::ULong(n) => write!(f, "{}", n),
             Const::Double(n) => write!(f, "{}", n),
+            Const::Char(n) => write!(f, "{}", n),
+            Const::UChar(n) => write!(f, "{}", n),
         }
     }
 }
@@ -99,6 +110,7 @@ pub enum Expression {
     Deref(Box<Expression>),
     AddrOf(Box<Expression>),
     Subscript(Box<Expression>, Box<Expression>),
+    Str(Box<[u8]>),
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -163,6 +175,9 @@ pub enum Type {
     UInt,
     ULong,
     Double,
+    Char,
+    UChar,
+    SChar,
     Fun(Vec<Type>, Box<Type>),
     Pointer(Box<Type>),
     Array(Box<Type>, u32),

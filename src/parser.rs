@@ -122,6 +122,7 @@ impl<'a> Parser<'a> {
 
     fn declaration(&mut self) -> ParseResult<Declaration<Expression>> {
         let mut storage_and_type = vec![];
+
         while Self::is_specifier(self.current()) {
             storage_and_type.push(self.current());
             self.advance()?;
@@ -369,7 +370,8 @@ impl<'a> Parser<'a> {
                 | TokenKind::Long
                 | TokenKind::Unsigned
                 | TokenKind::Signed
-                | TokenKind::Double) => types.push(kind),
+                | TokenKind::Double
+                | TokenKind::Char) => types.push(kind),
                 TokenKind::Static | TokenKind::Extern => storage_classes.push(specifier.kind),
                 _ => {
                     return Err(
@@ -415,7 +417,7 @@ impl<'a> Parser<'a> {
         for type_spec in &types {
             if seen.contains(type_spec) {
                 return Err(self.report_error(format!(
-                    "Type specifier list contains specificer {type_spec:?} twice"
+                    "Type specifier list contains specifier {type_spec:?} twice"
                 )));
             }
             seen.insert(*type_spec);
@@ -423,6 +425,21 @@ impl<'a> Parser<'a> {
 
         if types.contains(&TokenKind::Long) && types.contains(&TokenKind::Unsigned) {
             return Ok(Type::ULong);
+        }
+
+        if types.contains(&TokenKind::Char) {
+            if types.contains(&TokenKind::Unsigned) && types.len() == 2 {
+                return Ok(Type::UChar);
+            }
+            if types.contains(&TokenKind::Signed) && types.len() == 2 {
+                return Ok(Type::SChar);
+            }
+            if types.len() > 1 {
+                return Err(
+                    self.report_error(format!("char combined with other type specs: {:?}", types))
+                );
+            }
+            return Ok(Type::Char);
         }
 
         if types.contains(&TokenKind::Unsigned) {
@@ -444,7 +461,8 @@ impl<'a> Parser<'a> {
                 | TokenKind::Long
                 | TokenKind::Unsigned
                 | TokenKind::Signed
-                | TokenKind::Double) => types.push(kind),
+                | TokenKind::Double
+                | TokenKind::Char) => types.push(kind),
                 _ => unreachable!(),
             }
             self.advance()?;
@@ -727,10 +745,53 @@ impl<'a> Parser<'a> {
                 n.parse::<f64>()
                     .map_err(|_| CompileError::Parse(format!("Error parsing double {n}")))?,
             ),
+            TokenKind::CharConstant(c) => Const::Int(Self::char_constant(c).into()),
             err => return Err(self.report_error(format!("bad numeric parse: {:?}", err))),
         };
         self.advance()?;
         Ok(Expression::Constant(c))
+    }
+
+    fn char_constant(s: &str) -> u8 {
+        // unwrap() is safe because the lexer has made sure this escape sequence is valid
+        if s.len() == 1 {
+            s.chars().nth(0).unwrap() as u8
+        } else {
+            // s.len() == 2, s[0] == '\\'
+            Self::escape_char_to_ascii(s.chars().nth(1).unwrap())
+        }
+    }
+
+    fn string(s: &str) -> Box<[u8]> {
+        let mut bytes = Vec::with_capacity(s.len());
+        let mut iter = s.chars();
+        while let Some(c) = iter.next() {
+            if c == '\\' {
+                // unwrap() is safe because we've already checked that
+                // this is a valid escape sequence in lexer
+                bytes.push(Self::escape_char_to_ascii(iter.next().unwrap()))
+            } else {
+                bytes.push(c as u8)
+            }
+        }
+        bytes.into_boxed_slice()
+    }
+
+    fn escape_char_to_ascii(c: char) -> u8 {
+        match c {
+            '\'' => 39,
+            '"' => 34,
+            '?' => 63,
+            '\\' => 92,
+            'a' => 7,
+            'b' => 8,
+            'f' => 12,
+            'n' => 10,
+            'r' => 13,
+            't' => 9,
+            'v' => 11,
+            _ => unimplemented!(),
+        }
     }
 
     fn get_prec(t: Token) -> Prec {
@@ -895,16 +956,25 @@ impl<'a> Parser<'a> {
             | TokenKind::UnsignedLongConstant(_)
             | TokenKind::LongConstant(_)
             | TokenKind::Constant(_)
-            | TokenKind::DoubleConstant(_) => self.constant()?,
+            | TokenKind::DoubleConstant(_)
+            | TokenKind::CharConstant(_) => self.constant()?,
+            TokenKind::StringLiteral(s) => {
+                let mut strs = vec![s];
+                self.advance()?; // munch this string
+                while let TokenKind::StringLiteral(s) = self.current().kind {
+                    // Concatenate string literals next to each other
+                    strs.push(s);
+                    self.advance()?;
+                }
+                Expression::Str(Self::string(&strs.concat()))
+            }
             TokenKind::LParen => {
                 self.consume(TokenKind::LParen)?;
                 if Self::is_type_specifier(self.current()) {
                     let base_ty = self.type_specifier()?;
                     let abstract_declarator = self.abstract_declarator()?;
-                    println!("{abstract_declarator:?}");
                     self.consume(TokenKind::RParen)?;
                     let ty = Self::process_abstract_declarator(abstract_declarator, base_ty);
-                    println!("{ty:?}");
                     let expr = self.expression(Prec::Postfix)?;
                     Expression::Cast(ty, Box::new(expr))
                 } else {
@@ -1049,6 +1119,7 @@ impl<'a> Parser<'a> {
                 | TokenKind::Extern
                 | TokenKind::Static
                 | TokenKind::Double
+                | TokenKind::Char
         )
     }
 
@@ -1060,11 +1131,17 @@ impl<'a> Parser<'a> {
                 | TokenKind::Signed
                 | TokenKind::Unsigned
                 | TokenKind::Double
+                | TokenKind::Char
         )
     }
 
     fn report_error(&self, message: String) -> CompileError {
-        let last_token = self.last_token.unwrap();
+        let last_token = self.last_token.unwrap_or(Token {
+            kind: TokenKind::Eof,
+            start: 0,
+            end: 0,
+            line: 1,
+        });
         let line = last_token.line;
         let first = format!("Error [line {}]: {}", line, message);
         let second = "Error seems to be around here...".to_string();
@@ -1076,7 +1153,7 @@ impl<'a> Parser<'a> {
 
     fn print_enclosing_lines(&self, error_start: usize, error_end: usize) -> String {
         let mut line_start = error_start;
-        while self.tokens.source.get(line_start..line_start + 1) != Some("\n") {
+        while self.tokens.source.get(line_start..line_start + 1) != Some("\n") && line_start != 0 {
             line_start -= 1;
         }
         line_start += 1;
